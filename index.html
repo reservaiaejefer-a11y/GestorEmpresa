@@ -403,20 +403,21 @@ function FormLanc({db,onDone}){
 
 // ── SEÇÃO: DASHBOARD ──────────────────────────────────────────────────────────
 function Dashboard({db,isMobile}){
-  const [data,setData]=useState({pedidos:[],lancMes:[],receber:[],meta:0});
+  const [data,setData]=useState({pedidos:[],lancMes:[],despMes:[],receber:[],meta:0});
   const [loading,setLoading]=useState(true);
   useEffect(()=>{
     (async()=>{
       setLoading(true);
       try{
         const proxMes=MES_ATUAL===12?`${ANO_ATUAL+1}-01-01`:`${ANO_ATUAL}-${mesStr(MES_ATUAL+1)}-01`;
-        const [pedidos,lancMes,receber,metas]=await Promise.all([
+        const [pedidos,lancMes,despMes,receber,metas]=await Promise.all([
           db.get('pedidos'),
           db.get('lancamentos',`tipo=eq.receita&data=gte.${ANO_ATUAL}-${mesStr(MES_ATUAL)}-01&data=lt.${proxMes}`),
+          db.get('lancamentos',`tipo=eq.despesa&data=gte.${ANO_ATUAL}-${mesStr(MES_ATUAL)}-01&data=lt.${proxMes}`),
           db.get('contas_receber'),
           db.get('metas',`ano=eq.${ANO_ATUAL}&mes=eq.${MES_ATUAL}`)
         ]);
-        setData({pedidos,lancMes,receber,meta:metas?.[0]?.valor||0});
+        setData({pedidos,lancMes,despMes,receber,meta:metas?.[0]?.valor||0});
       }catch{}finally{setLoading(false);}
     })();
   },[]);
@@ -424,13 +425,17 @@ function Dashboard({db,isMobile}){
   const tRec=data.receber.filter(c=>c.status!=='Pago').reduce((s,c)=>s+ +c.valor,0);
   const ativos=data.pedidos.filter(p=>p.status!=='Concluído');
   const recMes=data.lancMes.reduce((s,l)=>s+ +l.valor,0);
+  const despMes=data.despMes.reduce((s,l)=>s+ +l.valor,0);
+  const resultado=recMes-despMes;
   const cP={Orçamento:C.muted,Aprovação:C.purple,Arte:C.gold,Produção:C.blue,Entrega:C.green,Concluído:C.green};
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
     <div style=${{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(auto-fit,minmax(155px,1fr))',gap:10}}>
       <${MetaCard} metaMes=${data.meta} receitaMes=${recMes} isMobile=${isMobile}/>
+      <${KpiCard} title="Receita do Mês" value=${fmt(recMes)} sub=${MESES[MES_ATUAL-1]} icon="💰" color=${C.green}/>
+      <${KpiCard} title="Despesas do Mês" value=${fmt(despMes)} sub=${MESES[MES_ATUAL-1]} icon="📤" color=${C.red}/>
+      <${KpiCard} title="Resultado do Mês" value=${fmt(resultado)} sub="receita − despesa" icon="📊" color=${resultado>=0?C.green:C.red}/>
       <${KpiCard} title="Pedidos Ativos" value=${ativos.length} sub="em andamento" icon="📦" color=${C.blue}/>
       <${KpiCard} title="A Receber" value=${fmt(tRec)} sub="em aberto" icon="🏦" color=${C.purple}/>
-      <${KpiCard} title="Receita do Mês" value=${fmt(recMes)} sub=${MESES[MES_ATUAL-1]} icon="💰" color=${C.green}/>
     </div>
     <${Card}>
       <${SecTitle}>Pedidos Recentes</${SecTitle}>
@@ -767,17 +772,15 @@ const MENU_A=[
 // ── APP ───────────────────────────────────────────────────────────────────────
 function App(){
   const isMobile=useIsMobile();
-  const [screen,setScreen]=useState('config');
-  const [cfg,setCfg]=useState(null);
+  const [screen,setScreen]=useState('login');
+  const [cfg,setCfg]=useState({url:'https://kwwhmwmjdaodirsuhqvz.supabase.co',key:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt3d2htd21qZGFvZGlyc3VocXZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1NDE1NzEsImV4cCI6MjA5NDExNzU3MX0.o4n-r35CAjsq0jglm0cyPIvyUSIq-C3lR7YjEhg-iHQ'});
   const [sess,setSess]=useState(null);
   const [pag,setPag]=useState(null);
 
-  const onConfig=(u,k)=>{setCfg({url:u,key:k});setScreen('login');};
   const onLogin=s=>{setSess(s);const m=s.role==='gerencial'?MENU_G:MENU_A;setPag(m[0].id);setScreen('main');};
-  const logout=()=>{setSess(null);setCfg(null);setScreen('config');};
+  const logout=()=>{setSess(null);setScreen('login');};
 
-  if(screen==='config') return html`<${ConfigScreen} onSave=${onConfig}/>`;
-  if(screen==='login')  return html`<${LoginScreen} url=${cfg.url} sbKey=${cfg.key} onLogin=${onLogin} onBack=${()=>setScreen('config')}/>`;
+  if(screen==='login')  return html`<${LoginScreen} url=${cfg.url} sbKey=${cfg.key} onLogin=${onLogin}/>`;
 
   const db=mkDB(cfg.url,cfg.key,sess.token);
   const MENU=sess.role==='gerencial'?MENU_G:MENU_A;
