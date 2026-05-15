@@ -402,22 +402,98 @@ function FormLanc({db,onDone}){
 }
 
 // ── SEÇÃO: DASHBOARD ──────────────────────────────────────────────────────────
+// ── GRÁFICO: GAUGE META ───────────────────────────────────────────────────────
+function GaugeMeta({valor,meta}){
+  const pct=meta>0?Math.min(1,valor/meta):0;
+  const r=54; const cx=70; const cy=70;
+  const circ=2*Math.PI*r;
+  const dash=circ*pct;
+  const cor=pct>=1?C.green:pct>=0.7?C.gold:pct>=0.4?C.blue:C.red;
+  return html`<div>
+    <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:8}}>🎯 Meta vs Realizado</div>
+    <div style=${{display:'flex',alignItems:'center',gap:16}}>
+      <svg viewBox="0 0 140 140" style=${{width:130,height:130,flexShrink:0}}>
+        <circle cx=${cx} cy=${cy} r=${r} fill="none" stroke=${C.border} strokeWidth="14"/>
+        <circle cx=${cx} cy=${cy} r=${r} fill="none" stroke=${cor} strokeWidth="14"
+          stroke-dasharray="${dash} ${circ}" stroke-linecap="round"
+          transform="rotate(-90 ${cx} ${cy})" style=${{transition:'stroke-dasharray .6s ease'}}/>
+        <text x=${cx} y=${cy-8} text-anchor="middle" fill=${cor} font-size="22" font-weight="900">${Math.round(pct*100)}%</text>
+        <text x=${cx} y=${cy+12} text-anchor="middle" fill=${C.muted} font-size="9">atingido</text>
+        <text x=${cx} y=${cy+26} text-anchor="middle" fill=${C.text} font-size="8">${meta>0?fmt(meta):'Sem meta'}</text>
+      </svg>
+      <div style=${{flex:1}}>
+        <div style=${{marginBottom:10}}>
+          <div style=${{fontSize:10,color:C.muted,marginBottom:2}}>Recebido</div>
+          <div style=${{fontSize:16,fontWeight:800,color:C.green}}>${fmt(valor)}</div>
+        </div>
+        <div style=${{marginBottom:10}}>
+          <div style=${{fontSize:10,color:C.muted,marginBottom:2}}>Meta</div>
+          <div style=${{fontSize:16,fontWeight:800,color:cor}}>${meta>0?fmt(meta):'—'}</div>
+        </div>
+        <div>
+          <div style=${{fontSize:10,color:C.muted,marginBottom:2}}>Falta</div>
+          <div style=${{fontSize:16,fontWeight:800,color:Math.max(0,meta-valor)>0?C.red:C.green}}>${meta>0?fmt(Math.max(0,meta-valor)):'—'}</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── GRÁFICO: BARRAS RECEITA × DESPESA ────────────────────────────────────────
+function BarRecDesp({dados,height=160}){
+  if(!dados||!dados.length) return html`<${Empty} msg="Sem lançamentos no período"/>`;
+  const maxVal=Math.max(...dados.flatMap(d=>[d.receita,d.despesa]),1);
+  const n=dados.length;
+  const gw=100/n;
+  const bw=gw*0.32;
+  const areaH=height-22;
+  return html`<div>
+    <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:8}}>📊 Receitas × Despesas — últimos meses</div>
+    <div style=${{display:'flex',gap:12,marginBottom:8}}>
+      <span style=${{fontSize:10,color:C.green,display:'flex',alignItems:'center',gap:4}}><span style=${{width:10,height:10,background:C.green,borderRadius:2,display:'inline-block'}}/> Receita</span>
+      <span style=${{fontSize:10,color:C.red,display:'flex',alignItems:'center',gap:4}}><span style=${{width:10,height:10,background:C.red,borderRadius:2,display:'inline-block'}}/> Despesa</span>
+    </div>
+    <svg viewBox="0 0 100 ${height}" preserveAspectRatio="none" style=${{width:'100%',height:height+'px',display:'block'}}>
+      ${dados.map((d,i)=>{
+        const recH=(d.receita/maxVal)*areaH;
+        const despH=(d.despesa/maxVal)*areaH;
+        const gx=i*gw;
+        return html`<g key=${i}>
+          <rect x=${gx+gw*0.06} y=${areaH-recH} width=${bw} height=${recH} fill=${C.green} rx="1.5"/>
+          <rect x=${gx+gw*0.06+bw+gw*0.04} y=${areaH-despH} width=${bw} height=${despH} fill=${C.red} rx="1.5"/>
+          <text x=${gx+gw/2} y=${height-5} text-anchor="middle" fill=${C.muted} font-size="5">${d.mes}</text>
+        </g>`;
+      })}
+    </svg>
+  </div>`;
+}
+
 function Dashboard({db,isMobile}){
-  const [data,setData]=useState({pedidos:[],lancMes:[],despMes:[],receber:[],meta:0});
+  const [data,setData]=useState({pedidos:[],lancMes:[],despMes:[],receber:[],meta:0,chartData:[]});
   const [loading,setLoading]=useState(true);
   useEffect(()=>{
     (async()=>{
       setLoading(true);
       try{
         const proxMes=MES_ATUAL===12?`${ANO_ATUAL+1}-01-01`:`${ANO_ATUAL}-${mesStr(MES_ATUAL+1)}-01`;
-        const [pedidos,lancMes,despMes,receber,metas]=await Promise.all([
+        const d6=new Date(ANO_ATUAL,MES_ATUAL-7,1);
+        const d6str=`${d6.getFullYear()}-${mesStr(d6.getMonth()+1)}-01`;
+        const [pedidos,lancMes,despMes,receber,metas,lanc6m]=await Promise.all([
           db.get('pedidos'),
           db.get('lancamentos',`tipo=eq.receita&data=gte.${ANO_ATUAL}-${mesStr(MES_ATUAL)}-01&data=lt.${proxMes}`),
           db.get('lancamentos',`tipo=eq.despesa&data=gte.${ANO_ATUAL}-${mesStr(MES_ATUAL)}-01&data=lt.${proxMes}`),
           db.get('contas_receber'),
-          db.get('metas',`ano=eq.${ANO_ATUAL}&mes=eq.${MES_ATUAL}`)
+          db.get('metas',`ano=eq.${ANO_ATUAL}&mes=eq.${MES_ATUAL}`),
+          db.get('lancamentos',`data=gte.${d6str}&order=data.asc`)
         ]);
-        setData({pedidos,lancMes,despMes,receber,meta:metas?.[0]?.valor||0});
+        const porMes={};
+        lanc6m.forEach(l=>{
+          const m=l.data?.slice(0,7)||'';if(!m)return;
+          if(!porMes[m])porMes[m]={mes:MESES[parseInt(m.slice(5))-1].slice(0,3),receita:0,despesa:0};
+          porMes[m][l.tipo]+= +l.valor;
+        });
+        const chartData=Object.entries(porMes).sort(([a],[b])=>a.localeCompare(b)).slice(-6).map(([,v])=>v);
+        setData({pedidos,lancMes,despMes,receber,meta:metas?.[0]?.valor||0,chartData});
       }catch{}finally{setLoading(false);}
     })();
   },[]);
@@ -436,6 +512,14 @@ function Dashboard({db,isMobile}){
       <${KpiCard} title="Resultado do Mês" value=${fmt(resultado)} sub="receita − despesa" icon="📊" color=${resultado>=0?C.green:C.red}/>
       <${KpiCard} title="Pedidos Ativos" value=${ativos.length} sub="em andamento" icon="📦" color=${C.blue}/>
       <${KpiCard} title="A Receber" value=${fmt(tRec)} sub="em aberto" icon="🏦" color=${C.purple}/>
+    </div>
+    <div style=${{display:'grid',gridTemplateColumns:isMobile?'1fr':'1fr 1fr',gap:14}}>
+      <${Card}>
+        <${GaugeMeta} valor=${recMes} meta=${data.meta}/>
+      </${Card}>
+      <${Card}>
+        <${BarRecDesp} dados=${data.chartData} height=${isMobile?150:170}/>
+      </${Card}>
     </div>
     <${Card}>
       <${SecTitle}>Pedidos Recentes</${SecTitle}>
