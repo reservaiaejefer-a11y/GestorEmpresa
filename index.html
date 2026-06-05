@@ -837,6 +837,180 @@ function Metas({db,isMobile}){
 }
 
 // ── MENUS ─────────────────────────────────────────────────────────────────────
+// ── SEÇÃO: HISTÓRICO ─────────────────────────────────────────────────────────
+function Historico({db,isMobile}){
+  const [ano,setAno]=useState(ANO_ATUAL);
+  const [dados,setDados]=useState([]);
+  const [loading,setLoading]=useState(true);
+
+  useEffect(()=>{
+    (async()=>{
+      setLoading(true);
+      try{
+        const [lanc,metas,peds]=await Promise.all([
+          db.get('lancamentos',`data=gte.${ano}-01-01&data=lte.${ano}-12-31&order=data.asc`),
+          db.get('metas',`ano=eq.${ano}`),
+          db.get('pedidos',`created_at=gte.${ano}-01-01T00:00:00&created_at=lte.${ano}-12-31T23:59:59`)
+        ]);
+        const pm={};
+        for(let m=1;m<=12;m++) pm[m]={mes:m,receita:0,despesa:0,meta:0,pedidos:0};
+        lanc.forEach(l=>{const m=parseInt(l.data?.slice(5,7));if(pm[m]) pm[m][l.tipo]+= +l.valor;});
+        metas.forEach(r=>{if(pm[r.mes]) pm[r.mes].meta= +r.valor;});
+        peds.forEach(p=>{const m=parseInt(p.created_at?.slice(5,7));if(pm[m]) pm[m].pedidos++;});
+        setDados(Object.values(pm));
+      }catch{}finally{setLoading(false);}
+    })();
+  },[ano]);
+
+  const totalRec=dados.reduce((s,d)=>s+d.receita,0);
+  const totalDesp=dados.reduce((s,d)=>s+d.despesa,0);
+  const totalMeta=dados.reduce((s,d)=>s+d.meta,0);
+  const resultado=totalRec-totalDesp;
+  const mesesComDados=dados.filter(d=>d.receita>0||d.despesa>0).length;
+  const maxVal=Math.max(...dados.flatMap(d=>[d.receita,d.despesa,d.meta]),1);
+
+  // Gráfico de barras anual
+  const GraficoAnual=()=>{
+    const h=isMobile?140:180; const aH=h-24; const gw=100/12; const bw=gw*0.28;
+    return html`<div>
+      <div style=${{display:'flex',gap:12,marginBottom:8,flexWrap:'wrap'}}>
+        <span style=${{fontSize:10,color:C.green,display:'flex',alignItems:'center',gap:4}}><span style=${{width:10,height:10,background:C.green,borderRadius:2,display:'inline-block'}}/> Receita</span>
+        <span style=${{fontSize:10,color:C.red,display:'flex',alignItems:'center',gap:4}}><span style=${{width:10,height:10,background:C.red,borderRadius:2,display:'inline-block'}}/> Despesa</span>
+        <span style=${{fontSize:10,color:C.gold,display:'flex',alignItems:'center',gap:4}}><span style=${{width:10,height:10,background:C.gold,borderRadius:2,display:'inline-block'}}/> Meta</span>
+      </div>
+      <svg viewBox="0 0 100 ${h}" preserveAspectRatio="none" style=${{width:'100%',height:h+'px',display:'block'}}>
+        ${dados.map((d,i)=>{
+          const recH=(d.receita/maxVal)*aH;
+          const despH=(d.despesa/maxVal)*aH;
+          const metaH=(d.meta/maxVal)*aH;
+          const gx=i*gw;
+          const ativo=d.mes===MES_ATUAL&&ano===ANO_ATUAL;
+          return html`<g key=${i}>
+            ${ativo&&html`<rect x=${gx} y="0" width=${gw} height=${aH} fill="#3ECBA011" rx="1"/>`}
+            <rect x=${gx+gw*0.04} y=${aH-recH} width=${bw} height=${recH} fill=${C.green} rx="1"/>
+            <rect x=${gx+gw*0.04+bw+gw*0.02} y=${aH-despH} width=${bw} height=${despH} fill=${C.red} rx="1"/>
+            ${d.meta>0&&html`<line x1=${gx+gw*0.04} y1=${aH-metaH} x2=${gx+gw*0.96} y2=${aH-metaH} stroke=${C.gold} stroke-width="0.8" stroke-dasharray="1.5,1"/>`}
+            <text x=${gx+gw/2} y=${h-6} text-anchor="middle" fill=${ativo?C.gold:C.muted} font-size="4.5" font-weight=${ativo?'bold':'normal'}>${MESES[i].slice(0,3)}</text>
+          </g>`;
+        })}
+      </svg>
+    </div>`;
+  };
+
+  // Status da meta por mês
+  const metaStatus=d=>{
+    if(!d.meta) return {cor:C.muted,label:'—'};
+    const pct=Math.round((d.receita/d.meta)*100);
+    if(pct>=100) return {cor:C.green,label:`${pct}%`};
+    if(pct>=70)  return {cor:C.gold, label:`${pct}%`};
+    if(pct>=1)   return {cor:C.red,  label:`${pct}%`};
+    return {cor:C.muted,label:'0%'};
+  };
+
+  return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
+    <!-- KPIs anuais -->
+    <${KpiGrid} isMobile=${isMobile}>
+      <${KpiCard} title="Receita Anual" value=${fmt(totalRec)} sub=${String(ano)} icon="💰" color=${C.green}/>
+      <${KpiCard} title="Despesas Anuais" value=${fmt(totalDesp)} sub=${String(ano)} icon="📤" color=${C.red}/>
+      <${KpiCard} title="Resultado Anual" value=${fmt(resultado)} sub="receita − despesa" icon="📊" color=${resultado>=0?C.green:C.red}/>
+      <${KpiCard} title="Meta Anual" value=${totalMeta>0?fmt(totalMeta):'Não definida'} sub=${totalMeta>0?`${Math.round((totalRec/totalMeta)*100)}% atingido`:'Cadastre em Metas'} icon="🎯" color=${C.gold}/>
+    </${KpiGrid}>
+
+    <!-- Seletor de ano + gráfico -->
+    <${Card}>
+      <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+        <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1}}>📅 Visão Anual — ${ano}</div>
+        <div style=${{display:'flex',gap:8,alignItems:'center'}}>
+          <button onClick=${()=>setAno(a=>a-1)} style=${{background:C.surface,border:`1px solid ${C.border}`,color:C.muted,borderRadius:8,padding:'5px 12px',cursor:'pointer',fontSize:13}}>‹</button>
+          <span style=${{color:C.text,fontWeight:700,fontSize:14,minWidth:40,textAlign:'center'}}>${ano}</span>
+          <button onClick=${()=>setAno(a=>a+1)} style=${{background:C.surface,border:`1px solid ${C.border}`,color:C.muted,borderRadius:8,padding:'5px 12px',cursor:'pointer',fontSize:13}}>›</button>
+        </div>
+      </div>
+      ${loading?html`<${Spin}/>`:<${GraficoAnual}/>}
+    </${Card}>
+
+    <!-- Tabela mês a mês -->
+    <${Card}>
+      <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:12}}>Detalhamento Mês a Mês</div>
+      ${loading?html`<${Spin}/>`:html`<div>
+        <!-- Cabeçalho -->
+        <div style=${{display:'grid',gridTemplateColumns:isMobile?'3fr 2fr 2fr 2fr':'3fr 2fr 2fr 2fr 2fr 2fr',gap:4,padding:'6px 8px',background:C.surface,borderRadius:8,marginBottom:6}}>
+          ${['Mês','Receita','Despesa','Resultado', ...(isMobile?[]:['Meta','% Meta'])].map(h=>html`
+            <div key=${h} style=${{fontSize:9,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:.5}}>${h}</div>`)}
+        </div>
+        <!-- Linhas -->
+        ${dados.map(d=>{
+          const res=d.receita-d.despesa;
+          const ms=metaStatus(d);
+          const ativo=d.mes===MES_ATUAL&&ano===ANO_ATUAL;
+          const temDados=d.receita>0||d.despesa>0;
+          return html`<div key=${d.mes} style=${{display:'grid',gridTemplateColumns:isMobile?'3fr 2fr 2fr 2fr':'3fr 2fr 2fr 2fr 2fr 2fr',gap:4,padding:'8px 8px',borderRadius:8,marginBottom:3,
+            background:ativo?C.gold+'18':temDados?C.card:C.surface,
+            border:ativo?`1px solid ${C.gold}44`:`1px solid transparent`,
+            opacity:temDados||ativo?1:0.45}}>
+            <div style=${{display:'flex',alignItems:'center',gap:6}}>
+              ${ativo&&html`<span style=${{width:6,height:6,borderRadius:'50%',background:C.gold,display:'inline-block',flexShrink:0}}/>`}
+              <span style=${{fontSize:12,color:ativo?C.gold:C.text,fontWeight:ativo?700:400}}>${MESES[d.mes-1]}</span>
+            </div>
+            <div style=${{fontSize:12,color:C.green,fontWeight:600}}>${d.receita>0?fmt(d.receita):'—'}</div>
+            <div style=${{fontSize:12,color:C.red,fontWeight:600}}>${d.despesa>0?fmt(d.despesa):'—'}</div>
+            <div style=${{fontSize:12,color:res>0?C.green:res<0?C.red:C.muted,fontWeight:600}}>${temDados?fmt(res):'—'}</div>
+            ${!isMobile&&html`<div style=${{fontSize:12,color:C.muted}}>${d.meta>0?fmt(d.meta):'—'}</div>`}
+            ${!isMobile&&html`<div style=${{fontSize:12,color:ms.cor,fontWeight:700}}>${ms.label}</div>`}
+          </div>`;
+        })}
+        <!-- Totais -->
+        <div style=${{display:'grid',gridTemplateColumns:isMobile?'3fr 2fr 2fr 2fr':'3fr 2fr 2fr 2fr 2fr 2fr',gap:4,padding:'10px 8px',borderRadius:8,marginTop:6,background:C.surface,borderTop:`2px solid ${C.border}`}}>
+          <div style=${{fontSize:11,color:C.text,fontWeight:800}}>TOTAL</div>
+          <div style=${{fontSize:11,color:C.green,fontWeight:800}}>${fmt(totalRec)}</div>
+          <div style=${{fontSize:11,color:C.red,fontWeight:800}}>${fmt(totalDesp)}</div>
+          <div style=${{fontSize:11,color:resultado>=0?C.green:C.red,fontWeight:800}}>${fmt(resultado)}</div>
+          ${!isMobile&&html`<div style=${{fontSize:11,color:C.gold,fontWeight:800}}>${totalMeta>0?fmt(totalMeta):'—'}</div>`}
+          ${!isMobile&&html`<div style=${{fontSize:11,color:totalMeta>0?(totalRec/totalMeta>=1?C.green:C.red):C.muted,fontWeight:800}}>${totalMeta>0?Math.round((totalRec/totalMeta)*100)+'%':'—'}</div>`}
+        </div>
+      </div>`}
+    </${Card}>
+
+    <!-- Cards por mês (mobile: resumo compacto) -->
+    ${isMobile&&html`<div>
+      <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:10}}>Resumo por Mês</div>
+      ${dados.filter(d=>d.receita>0||d.despesa>0||d.meta>0).map(d=>{
+        const res=d.receita-d.despesa;
+        const ms=metaStatus(d);
+        const ativo=d.mes===MES_ATUAL&&ano===ANO_ATUAL;
+        return html`<div key=${d.mes} style=${{background:ativo?C.gold+'18':C.card,borderRadius:12,padding:12,marginBottom:8,border:`1px solid ${ativo?C.gold+'44':C.border}`,borderLeft:`3px solid ${ms.cor}`}}>
+          <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+            <span style=${{fontSize:13,color:ativo?C.gold:C.text,fontWeight:700}}>${MESES[d.mes-1]} ${ano}</span>
+            <span style=${{fontSize:13,color:ms.cor,fontWeight:800}}>${ms.label}</span>
+          </div>
+          <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+            <div style=${{background:C.surface,borderRadius:8,padding:'6px 8px'}}>
+              <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Receita</div>
+              <div style=${{fontSize:13,color:C.green,fontWeight:700}}>${d.receita>0?fmt(d.receita):'—'}</div>
+            </div>
+            <div style=${{background:C.surface,borderRadius:8,padding:'6px 8px'}}>
+              <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Despesa</div>
+              <div style=${{fontSize:13,color:C.red,fontWeight:700}}>${d.despesa>0?fmt(d.despesa):'—'}</div>
+            </div>
+            <div style=${{background:C.surface,borderRadius:8,padding:'6px 8px'}}>
+              <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Resultado</div>
+              <div style=${{fontSize:13,color:res>=0?C.green:C.red,fontWeight:700}}>${d.receita>0||d.despesa>0?fmt(res):'—'}</div>
+            </div>
+            <div style=${{background:C.surface,borderRadius:8,padding:'6px 8px'}}>
+              <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Meta</div>
+              <div style=${{fontSize:13,color:C.gold,fontWeight:700}}>${d.meta>0?fmt(d.meta):'—'}</div>
+            </div>
+          </div>
+          ${d.meta>0&&html`<div style=${{marginTop:8}}>
+            <${PBar} value=${Math.min(100,Math.round((d.receita/d.meta)*100))} color=${ms.cor}/>
+          </div>`}
+        </div>`;
+      })}
+      ${dados.filter(d=>d.receita>0||d.despesa>0||d.meta>0).length===0&&html`<${Empty} msg="Nenhum dado encontrado para ${ano}"/>`}
+    </div>`}
+  </div>`;
+}
+
 const MENU_G=[
   {id:'dashboard', label:'Dashboard', icon:'📊'},
   {id:'financeiro',label:'Financeiro',icon:'💰'},
@@ -844,6 +1018,7 @@ const MENU_G=[
   {id:'clientes',  label:'Clientes',  icon:'🏢'},
   {id:'estoque',   label:'Estoque',   icon:'📦'},
   {id:'metas',     label:'Metas',     icon:'🎯'},
+  {id:'historico', label:'Histórico', icon:'📅'},
 ];
 const MENU_A=[
   {id:'pedidos',   label:'Pedidos',   icon:'📋'},
@@ -851,6 +1026,7 @@ const MENU_A=[
   {id:'estoque',   label:'Estoque',   icon:'📦'},
   {id:'financeiro',label:'Financeiro',icon:'💰'},
   {id:'metas',     label:'Metas',     icon:'🎯'},
+  {id:'historico', label:'Histórico', icon:'📅'},
 ];
 
 // ── APP ───────────────────────────────────────────────────────────────────────
@@ -904,6 +1080,7 @@ function App(){
       ${pag==='clientes'   &&html`<${Clientes}   ...${pr}/>`}
       ${pag==='estoque'    &&html`<${Estoque}     ...${pr}/>`}
       ${pag==='metas'      &&html`<${Metas}       ...${pr}/>`}
+      ${pag==='historico'  &&html`<${Historico}   ...${pr}/>`}
     </div>
 
     ${isMobile&&html`<nav style=${{position:'fixed',bottom:0,left:0,right:0,background:C.surface,borderTop:`1px solid ${C.border}`,display:'flex',zIndex:100,boxShadow:'0 -4px 20px #00000050'}}>
