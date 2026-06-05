@@ -409,15 +409,17 @@ function GaugeMeta({valor,meta}){
   const circ=2*Math.PI*r;
   const dash=circ*pct;
   const cor=pct>=1?C.green:pct>=0.7?C.gold:pct>=0.4?C.blue:C.red;
+  const dashArr=dash+' '+circ;
+  const rotateT='rotate(-90 '+cx+' '+cy+')';
   return html`<div>
     <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:8}}>🎯 Meta vs Realizado</div>
     <div style=${{display:'flex',alignItems:'center',gap:16}}>
       <svg viewBox="0 0 140 140" style=${{width:130,height:130,flexShrink:0}}>
-        <circle cx=${cx} cy=${cy} r=${r} fill="none" stroke=${C.border} strokeWidth="14"/>
-        <circle cx=${cx} cy=${cy} r=${r} fill="none" stroke=${cor} strokeWidth="14"
-          stroke-dasharray="${dash} ${circ}" stroke-linecap="round"
-          transform="rotate(-90 ${cx} ${cy})" style=${{transition:'stroke-dasharray .6s ease'}}/>
-        <text x=${cx} y=${cy-8} text-anchor="middle" fill=${cor} font-size="22" font-weight="900">${Math.round(pct*100)}%</text>
+        <circle cx=${cx} cy=${cy} r=${r} fill="none" stroke=${C.border} stroke-width="14"/>
+        <circle cx=${cx} cy=${cy} r=${r} fill="none" stroke=${cor} stroke-width="14"
+          stroke-dasharray=${dashArr} stroke-linecap="round"
+          transform=${rotateT} style=${{transition:'stroke-dasharray .6s ease'}}/>
+        <text x=${cx} y=${cy-8} text-anchor="middle" fill=${cor} font-size="22" font-weight="900">${Math.round(pct*100)+'%'}</text>
         <text x=${cx} y=${cy+12} text-anchor="middle" fill=${C.muted} font-size="9">atingido</text>
         <text x=${cx} y=${cy+26} text-anchor="middle" fill=${C.text} font-size="8">${meta>0?fmt(meta):'Sem meta'}</text>
       </svg>
@@ -869,8 +871,8 @@ function Historico({db,isMobile}){
   const mesesComDados=dados.filter(d=>d.receita>0||d.despesa>0).length;
   const maxVal=Math.max(...dados.flatMap(d=>[d.receita,d.despesa,d.meta]),1);
 
-  // Gráfico de barras anual
-  const GraficoAnual=()=>{
+  // Gráfico de barras anual — chamado como função, não como componente
+  const renderGrafico=()=>{
     const h=isMobile?140:180; const aH=h-24; const gw=100/12; const bw=gw*0.28;
     return html`<div>
       <div style=${{display:'flex',gap:12,marginBottom:8,flexWrap:'wrap'}}>
@@ -926,7 +928,7 @@ function Historico({db,isMobile}){
           <button onClick=${()=>setAno(a=>a+1)} style=${{background:C.surface,border:`1px solid ${C.border}`,color:C.muted,borderRadius:8,padding:'5px 12px',cursor:'pointer',fontSize:13}}>›</button>
         </div>
       </div>
-      ${loading?html`<${Spin}/>`:<${GraficoAnual}/>}
+      ${loading?html`<${Spin}/>`:(renderGrafico())}
     </${Card}>
 
     <!-- Tabela mês a mês -->
