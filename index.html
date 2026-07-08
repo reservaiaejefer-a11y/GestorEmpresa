@@ -302,6 +302,41 @@ function FormPedido({db,item,onDone}){
   </div>`;
 }
 
+function FormLancEdit({db,item,onDone}){
+  const [f,setF]=useState({
+    tipo:item?.tipo||'receita',
+    descricao:item?.descricao||'',
+    valor:item?.valor||0,
+    data:item?.data||new Date().toISOString().slice(0,10),
+    categoria:item?.categoria||'Geral'
+  });
+  const [loading,setLoading]=useState(false);const [err,setErr]=useState('');
+  const set=k=>e=>setF(p=>({...p,[k]:e.target.value}));
+  const save=async()=>{
+    if(!f.descricao) return setErr('Descrição obrigatória.');
+    if(!f.data) return setErr('Data obrigatória.');
+    setLoading(true);setErr('');
+    try{
+      await db.patch('lancamentos',item.id,{...f,valor:+f.valor});
+      onDone(true);
+    }catch(e){setErr(e.message);}finally{setLoading(false);}
+  };
+  return html`<div>
+    <${Slct} label="Tipo" options=${[{v:'receita',l:'💚 Receita'},{v:'despesa',l:'🔴 Despesa'}]} value=${f.tipo} onChange=${set('tipo')}/>
+    <${Inp} label="Descrição" value=${f.descricao} onInput=${set('descricao')}/>
+    <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+      <${Inp} label="Valor (R$)" type="number" step="0.01" value=${f.valor} onInput=${set('valor')}/>
+      <${Inp} label="Data" type="date" value=${f.data} onInput=${set('data')}/>
+    </div>
+    <${Inp} label="Categoria" value=${f.categoria} onInput=${set('categoria')}/>
+    <div style=${{background:C.gold+'11',border:`1px solid ${C.gold}33`,borderRadius:8,padding:'8px 12px',fontSize:11,color:C.gold,marginBottom:10}}>
+      ✏️ Editando lançamento existente — sem novas entradas em A Receber
+    </div>
+    ${err&&html`<${ErrBox} msg=${err}/>`}
+    <${Btn} full onClick=${save} disabled=${loading}>${loading?'Salvando...':'Salvar Alterações'}</${Btn}>
+  </div>`;
+}
+
 function FormCliente({db,item,onDone}){
   const [f,setF]=useState({nome:'',setor:'',email:'',telefone:'',...item});
   const [loading,setLoading]=useState(false);const [err,setErr]=useState('');
@@ -547,7 +582,7 @@ function Dashboard({db,isMobile}){
 }
 
 // ── SEÇÃO: FINANCEIRO ─────────────────────────────────────────────────────────
-function Financeiro({db,isMobile}){
+function Financeiro({db,isMobile,role}){
   const [aba,setAba]=useState('receber');
   const [rec,setRec]=useState([]);const [pag,setPag]=useState([]);const [lan,setLan]=useState([]);
   const [loading,setLoading]=useState(true);const [modal,setModal]=useState(null);
@@ -617,16 +652,21 @@ function Financeiro({db,isMobile}){
               <div style=${{fontSize:10,color:C.muted,marginTop:2}}>${new Date(l.data+'T12:00').toLocaleDateString('pt-BR')} · ${l.categoria}</div></div>
             <div style=${{textAlign:'right'}}>
               <div style=${{fontSize:14,color:l.tipo==='receita'?C.green:C.red,fontWeight:800}}>${l.tipo==='receita'?'+':'-'} ${fmt(l.valor)}</div>
-              <button onClick=${()=>dL(l.id)} style=${{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:11,marginTop:4}}>🗑 excluir</button>
+              <div style=${{display:'flex',gap:6,marginTop:6,justifyContent:'flex-end'}}>
+                <${Btn} small onClick=${()=>setModal({tipo:'lancamentoEdit',item:l})}>✏️</${Btn}>
+                <${Btn} small color=${C.red} onClick=${()=>dL(l.id)}>🗑</${Btn}>
+              </div>
             </div>
           </div>
         </${Card}>`)}
       </div>`}
     </div>`}
     ${modal!==null&&html`<${Modal}
-      title=${modal.tipo==='receber'?(modal.item?'Editar A Receber':'Nova Conta a Receber'):modal.tipo==='pagar'?(modal.item?'Editar A Pagar':'Nova Conta a Pagar'):'Novo Lançamento'}
+      title=${modal.tipo==='receber'?(modal.item?'Editar A Receber':'Nova Conta a Receber'):modal.tipo==='pagar'?(modal.item?'Editar A Pagar':'Nova Conta a Pagar'):modal.tipo==='lancamentoEdit'?'Editar Lançamento':'Novo Lançamento'}
       onClose=${()=>setModal(null)}>
-      ${modal.tipo==='lancamento'?html`<${FormLanc} db=${db} onDone=${ok=>{setModal(null);if(ok)load();}}/>`:html`<${FormConta} db=${db} tipo=${modal.tipo} item=${modal.item} onDone=${ok=>{setModal(null);if(ok)load();}}/>`}
+      ${modal.tipo==='lancamento'?html`<${FormLanc} db=${db} onDone=${ok=>{setModal(null);if(ok)load();}}/>`:
+        modal.tipo==='lancamentoEdit'?html`<${FormLancEdit} db=${db} item=${modal.item} onDone=${ok=>{setModal(null);if(ok)load();}}/>`:
+        html`<${FormConta} db=${db} tipo=${modal.tipo} item=${modal.item} onDone=${ok=>{setModal(null);if(ok)load();}}/>`}
     </${Modal}>`}
   </div>`;
 }
@@ -1077,7 +1117,7 @@ function App(){
         ${isMobile&&html`<button onClick=${logout} style=${{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:12}}>Sair</button>`}
       </div>
       ${pag==='dashboard'  &&html`<${Dashboard}  ...${pr}/>`}
-      ${pag==='financeiro' &&html`<${Financeiro} ...${pr}/>`}
+      ${pag==='financeiro' &&html`<${Financeiro} ...${pr} role=${sess.role}/>`}
       ${pag==='pedidos'    &&html`<${Pedidos}    ...${pr}/>`}
       ${pag==='clientes'   &&html`<${Clientes}   ...${pr}/>`}
       ${pag==='estoque'    &&html`<${Estoque}     ...${pr}/>`}
