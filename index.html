@@ -228,44 +228,50 @@ function LoginScreen({url,sbKey,onLogin,onBack}){
 
 // ── FORMS ─────────────────────────────────────────────────────────────────────
 function FormProduto({db,item,onDone}){
-  const [f,setF]=useState({nome:'',categoria:'Escrita',quantidade:0,estoque_minimo:0,custo:0,preco:0,...item});
+  const [f,setF]=useState({nome:'',categoria:'Escrita',custo:0,preco:0,quantidade:0,estoque_minimo:0,...item});
   const [loading,setLoading]=useState(false);const [err,setErr]=useState('');
   const set=k=>e=>setF(p=>({...p,[k]:e.target.value}));
+  const ct=+f.custo||0; const pc=+f.preco||0;
+  const margemPct=pc>0?Math.round(((pc-ct)/pc)*100):0;
   const save=async()=>{
     if(!f.nome) return setErr('Nome obrigatório.');
     setLoading(true);setErr('');
     try{
-      const d={...f,quantidade:+f.quantidade,estoque_minimo:+f.estoque_minimo,custo:+f.custo,preco:+f.preco,updated_at:new Date().toISOString()};
+      const d={...f,quantidade:+f.quantidade||0,estoque_minimo:+f.estoque_minimo||0,custo:+f.custo,preco:+f.preco,updated_at:new Date().toISOString()};
       if(item?.id) await db.patch('produtos',item.id,d); else await db.post('produtos',d);
       onDone(true);
     }catch(e){setErr(e.message);}finally{setLoading(false);}
   };
   const cats=['Escrita','Bolsas','Bebidas','Escritório','Vestuário','Tecnologia','Acessórios','Geral'];
   return html`<div>
-    <${Inp} label="Nome do Produto" value=${f.nome} onInput=${set('nome')}/>
+    <${Inp} label="Nome do Item / Brinde" value=${f.nome} onInput=${set('nome')}/>
     <${Slct} label="Categoria" options=${cats} value=${f.categoria} onChange=${set('categoria')}/>
     <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-      <${Inp} label="Quantidade" type="number" value=${f.quantidade} onInput=${set('quantidade')}/>
-      <${Inp} label="Estoque Mínimo" type="number" value=${f.estoque_minimo} onInput=${set('estoque_minimo')}/>
       <${Inp} label="Custo (R$)" type="number" step="0.01" value=${f.custo} onInput=${set('custo')}/>
-      <${Inp} label="Preço Venda (R$)" type="number" step="0.01" value=${f.preco} onInput=${set('preco')}/>
+      <${Inp} label="Preço Sugerido (R$)" type="number" step="0.01" value=${f.preco} onInput=${set('preco')}/>
     </div>
+    ${pc>0&&html`<div style=${{background:C.surface,borderRadius:8,padding:'8px 12px',marginBottom:13,display:'flex',justifyContent:'space-between'}}>
+      <span style=${{fontSize:11,color:C.muted}}>Margem</span>
+      <span style=${{fontSize:13,fontWeight:800,color:margemPct>=0?C.green:C.red}}>${margemPct}%</span>
+    </div>`}
     ${err&&html`<${ErrBox} msg=${err}/>`}
-    <${Btn} full onClick=${save} disabled=${loading}>${loading?'Salvando...':item?.id?'Salvar':'Cadastrar Produto'}</${Btn}>
+    <${Btn} full onClick=${save} disabled=${loading}>${loading?'Salvando...':item?.id?'Salvar':'Adicionar ao Catálogo'}</${Btn}>
   </div>`;
 }
 
 function FormPedido({db,item,onDone}){
   const cod=`PED-${ANO_ATUAL}-${String(Date.now()).slice(-4)}`;
-  const [f,setF]=useState({codigo:cod,cliente_nome:'',valor_total:0,quantidade_itens:0,prazo:'',status:'Orçamento',progresso:0,observacoes:'',...item});
+  const [f,setF]=useState({codigo:cod,cliente_nome:'',valor_total:0,custo_total:0,quantidade_itens:0,prazo:'',status:'Orçamento',progresso:0,observacoes:'',...item});
   const [loading,setLoading]=useState(false);const [err,setErr]=useState('');
   const set=k=>e=>setF(p=>({...p,[k]:e.target.value}));
   const sts=['Orçamento','Aprovação','Arte','Produção','Entrega','Concluído'];
+  const vt=+f.valor_total||0; const ct=+f.custo_total||0;
+  const margemRS=vt-ct; const margemPct=vt>0?Math.round((margemRS/vt)*100):0;
   const save=async()=>{
     if(!f.cliente_nome) return setErr('Nome do cliente obrigatório.');
     setLoading(true);setErr('');
     try{
-      const d={...f,valor_total:+f.valor_total,quantidade_itens:+f.quantidade_itens,progresso:+f.progresso};
+      const d={...f,valor_total:+f.valor_total,custo_total:+f.custo_total,quantidade_itens:+f.quantidade_itens,progresso:+f.progresso};
       const statusAnterior=item?.status||'';
       if(item?.id) await db.patch('pedidos',item.id,d); else await db.post('pedidos',d);
       // ── AUTO: cria A Receber quando entra em Produção ──────────────────────
@@ -288,9 +294,14 @@ function FormPedido({db,item,onDone}){
     </div>
     <${Inp} label="Nome do Cliente" value=${f.cliente_nome} onInput=${set('cliente_nome')}/>
     <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-      <${Inp} label="Valor Total (R$)" type="number" step="0.01" value=${f.valor_total} onInput=${set('valor_total')}/>
-      <${Inp} label="Qtd de Itens" type="number" value=${f.quantidade_itens} onInput=${set('quantidade_itens')}/>
+      <${Inp} label="Valor de Venda (R$)" type="number" step="0.01" value=${f.valor_total} onInput=${set('valor_total')}/>
+      <${Inp} label="Custo Total (R$)" type="number" step="0.01" value=${f.custo_total} onInput=${set('custo_total')}/>
     </div>
+    <${Inp} label="Qtd de Itens" type="number" value=${f.quantidade_itens} onInput=${set('quantidade_itens')}/>
+    ${vt>0&&html`<div style=${{background:C.surface,borderRadius:8,padding:'10px 12px',marginBottom:13,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+      <span style=${{fontSize:11,color:C.muted}}>Margem estimada</span>
+      <span style=${{fontSize:14,fontWeight:800,color:margemRS>=0?C.green:C.red}}>${fmt(margemRS)} (${margemPct}%)</span>
+    </div>`}
     <${Slct} label="Status" options=${sts} value=${f.status} onChange=${set('status')}/>
     <${Inp} label=${'Progresso: '+f.progresso+'%'} type="range" min="0" max="100" value=${f.progresso} onInput=${set('progresso')}/>
     <${Inp} label="Observações" value=${f.observacoes} onInput=${set('observacoes')}/>
@@ -541,12 +552,23 @@ function Dashboard({db,isMobile}){
   const despMes=data.despMes.reduce((s,l)=>s+ +l.valor,0);
   const resultado=recMes-despMes;
   const cP={Orçamento:C.muted,Aprovação:C.purple,Arte:C.gold,Produção:C.blue,Entrega:C.green,Concluído:C.green};
+  // Margem média da carteira (pedidos com custo cadastrado)
+  const comCusto=data.pedidos.filter(p=>+p.custo_total>0&&+p.valor_total>0);
+  const margemMedia=comCusto.length>0?Math.round(comCusto.reduce((s,p)=>s+((p.valor_total-p.custo_total)/p.valor_total*100),0)/comCusto.length):null;
+  // Alertas de prazo — pedidos ativos vencendo em até 3 dias ou atrasados
+  const hoje=new Date(); hoje.setHours(0,0,0,0);
+  const prazosAlerta=ativos.filter(p=>p.prazo).map(p=>{
+    const pz=new Date(p.prazo+'T00:00:00');
+    const dias=Math.round((pz-hoje)/86400000);
+    return {...p,dias};
+  }).filter(p=>p.dias<=3).sort((a,b)=>a.dias-b.dias);
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
     <div style=${{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(auto-fit,minmax(155px,1fr))',gap:10}}>
       <${MetaCard} metaMes=${data.meta} receitaMes=${recMes} isMobile=${isMobile}/>
       <${KpiCard} title="Receita do Mês" value=${fmt(recMes)} sub=${MESES[MES_ATUAL-1]} icon="💰" color=${C.green}/>
       <${KpiCard} title="Despesas do Mês" value=${fmt(despMes)} sub=${MESES[MES_ATUAL-1]} icon="📤" color=${C.red}/>
       <${KpiCard} title="Resultado do Mês" value=${fmt(resultado)} sub="receita − despesa" icon="📊" color=${resultado>=0?C.green:C.red}/>
+      <${KpiCard} title="Margem Média" value=${margemMedia!==null?margemMedia+'%':'—'} sub="da carteira" icon="📈" color=${C.green}/>
       <${KpiCard} title="Pedidos Ativos" value=${ativos.length} sub="em andamento" icon="📦" color=${C.blue}/>
       <${KpiCard} title="A Receber" value=${fmt(tRec)} sub="em aberto" icon="🏦" color=${C.purple}/>
     </div>
@@ -558,6 +580,18 @@ function Dashboard({db,isMobile}){
         <${BarRecDesp} dados=${data.chartData} height=${isMobile?150:170}/>
       </${Card}>
     </div>
+    ${prazosAlerta.length>0&&html`<div style=${{background:C.red+'11',border:`1px solid ${C.red}33`,borderRadius:12,padding:12}}>
+      <div style=${{fontWeight:700,color:C.red,fontSize:12,marginBottom:8}}>⏰ Prazos Próximos ou Atrasados</div>
+      <div style=${{display:'flex',flexDirection:'column',gap:6}}>
+        ${prazosAlerta.map(p=>html`<div key=${p.id} style=${{display:'flex',justifyContent:'space-between',alignItems:'center',background:C.card,borderRadius:8,padding:'8px 10px'}}>
+          <div>
+            <span style=${{fontSize:12,color:C.gold,fontWeight:700,fontFamily:'monospace'}}>${p.codigo}</span>
+            <span style=${{fontSize:12,color:C.text,marginLeft:8}}>${p.cliente_nome}</span>
+          </div>
+          <${Badge} label=${p.dias<0?`${Math.abs(p.dias)}d atrasado`:p.dias===0?'Vence hoje':`${p.dias}d restantes`} color=${p.dias<0?C.red:p.dias===0?C.red:C.gold}/>
+        </div>`)}
+      </div>
+    </div>`}
     <${Card}>
       <${SecTitle}>Pedidos Recentes</${SecTitle}>
       ${data.pedidos.length===0?html`<${Empty}/>`:data.pedidos.slice(0,5).map(p=>{
@@ -679,16 +713,21 @@ function Pedidos({db,isMobile}){
   useEffect(()=>{load();},[]);
   const del=async id=>{if(!confirm('Excluir pedido?'))return;await db.del('pedidos',id);load();};
   const ativos=rows.filter(p=>p.status!=='Concluído');
+  const comCusto=rows.filter(p=>+p.custo_total>0&&+p.valor_total>0);
+  const margemMediaP=comCusto.length>0?Math.round(comCusto.reduce((s,p)=>s+((p.valor_total-p.custo_total)/p.valor_total*100),0)/comCusto.length):null;
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
     <${KpiGrid} isMobile=${isMobile}>
       <${KpiCard} title="Pedidos Ativos" value=${ativos.length} sub="em andamento" icon="📋" color=${C.blue}/>
       <${KpiCard} title="Em Carteira" value=${fmt(ativos.reduce((s,p)=>s+ +p.valor_total,0))} sub="total" icon="💰" color=${C.gold}/>
+      <${KpiCard} title="Margem Média" value=${margemMediaP!==null?margemMediaP+'%':'—'} sub="da carteira" icon="📈" color=${C.green}/>
       <${KpiCard} title="Concluídos" value=${rows.filter(p=>p.status==='Concluído').length} sub="total" icon="✅" color=${C.green}/>
-      <${KpiCard} title="Itens" value=${fmtN(ativos.reduce((s,p)=>s+ +p.quantidade_itens,0))} sub="em produção" icon="🏭" color=${C.purple}/>
     </${KpiGrid}>
     <div style=${{display:'flex',justifyContent:'flex-end'}}><${Btn} onClick=${()=>setModal({})}>+ Novo Pedido</${Btn}></div>
     ${loading?html`<${Spin}/>`:rows.length===0?html`<${Empty} msg="Nenhum pedido cadastrado"/>`:rows.map(p=>{
       const cor=cP[p.status]||C.muted;
+      const vt=+p.valor_total||0; const ct=+p.custo_total||0;
+      const temMargem=ct>0;
+      const margemRS=vt-ct; const margemPct=vt>0?Math.round((margemRS/vt)*100):0;
       return html`<div key=${p.id} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,borderLeft:`3px solid ${cor}`,marginBottom:8}}>
         <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:7}}>
           <div><div style=${{fontSize:10,color:C.gold,fontWeight:700,fontFamily:'monospace'}}>${p.codigo}</div>
@@ -700,6 +739,10 @@ function Pedidos({db,isMobile}){
           <span style=${{fontSize:15,color:C.green,fontWeight:800}}>${fmt(p.valor_total)}</span>
           <span style=${{fontSize:10,color:C.muted}}>${fmtN(p.quantidade_itens)} itens</span>
         </div>
+        ${temMargem&&html`<div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',background:C.surface,borderRadius:8,padding:'6px 10px',marginBottom:9}}>
+          <span style=${{fontSize:10,color:C.muted}}>Custo: ${fmt(ct)}</span>
+          <span style=${{fontSize:11,fontWeight:700,color:margemRS>=0?C.green:C.red}}>Margem: ${fmt(margemRS)} (${margemPct}%)</span>
+        </div>`}
         <div style=${{display:'flex',alignItems:'center',gap:8,marginBottom:9}}>
           <${PBar} value=${p.progresso} color=${cor}/>
           <span style=${{fontSize:10,color:C.muted,minWidth:28}}>${p.progresso}%</span>
@@ -719,24 +762,77 @@ function Pedidos({db,isMobile}){
 
 // ── SEÇÃO: CLIENTES ───────────────────────────────────────────────────────────
 function Clientes({db,isMobile}){
-  const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);const [modal,setModal]=useState(null);const [busca,setBusca]=useState('');
-  const load=useCallback(async()=>{setLoading(true);try{setRows(await db.get('clientes'));}catch{}finally{setLoading(false);}  },[]);
+  const [rows,setRows]=useState([]);const [pedidos,setPedidos]=useState([]);
+  const [loading,setLoading]=useState(true);const [modal,setModal]=useState(null);
+  const [busca,setBusca]=useState('');const [soSumidos,setSoSumidos]=useState(false);
+  const load=useCallback(async()=>{
+    setLoading(true);
+    try{
+      const [cli,ped]=await Promise.all([db.get('clientes'),db.get('pedidos')]);
+      setRows(cli);setPedidos(ped);
+    }catch{}finally{setLoading(false);}
+  },[]);
   useEffect(()=>{load();},[]);
   const del=async id=>{if(!confirm('Excluir cliente?'))return;await db.del('clientes',id);load();};
-  const fil=rows.filter(r=>r.nome?.toLowerCase().includes(busca.toLowerCase())||r.setor?.toLowerCase().includes(busca.toLowerCase()));
+
+  const norm=s=>(s||'').trim().toLowerCase();
+  const statsCliente=nome=>{
+    const matched=pedidos.filter(p=>norm(p.cliente_nome)===norm(nome));
+    const totalComprado=matched.reduce((s,p)=>s+ +p.valor_total,0);
+    const qtdPedidos=matched.length;
+    const datas=matched.map(p=>p.created_at).filter(Boolean).sort();
+    const ultimaData=datas.length?datas[datas.length-1]:null;
+    let diasSemComprar=null;
+    if(ultimaData){
+      diasSemComprar=Math.floor((Date.now()-new Date(ultimaData))/86400000);
+    }
+    const sumido=qtdPedidos===0||diasSemComprar>90;
+    return {totalComprado,qtdPedidos,ultimaData,diasSemComprar,sumido};
+  };
+
+  const enriquecidos=rows.map(r=>({...r,_stats:statsCliente(r.nome)}));
+  const totalSumidos=enriquecidos.filter(r=>r._stats.sumido).length;
+  const fil=enriquecidos.filter(r=>{
+    const matchBusca=r.nome?.toLowerCase().includes(busca.toLowerCase())||r.setor?.toLowerCase().includes(busca.toLowerCase());
+    if(soSumidos) return matchBusca&&r._stats.sumido;
+    return matchBusca;
+  });
+
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
     <${KpiGrid} isMobile=${isMobile}>
       <${KpiCard} title="Total Clientes" value=${rows.length} sub="cadastrados" icon="🏢" color=${C.blue}/>
       <${KpiCard} title="Setores" value=${new Set(rows.map(r=>r.setor).filter(Boolean)).size} sub="diferentes" icon="🏷️" color=${C.gold}/>
+      <${KpiCard} title="Clientes Sumidos" value=${totalSumidos} sub="90+ dias sem comprar" icon="⚠️" color=${totalSumidos>0?C.red:C.green}/>
     </${KpiGrid}>
-    <div style=${{display:'flex',gap:10}}>
-      <input value=${busca} onInput=${e=>setBusca(e.target.value)} placeholder="🔍 Buscar cliente..." style=${{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 14px',color:C.text,fontSize:13,outline:'none'}}/>
+    <div style=${{display:'flex',gap:10,flexWrap:'wrap'}}>
+      <input value=${busca} onInput=${e=>setBusca(e.target.value)} placeholder="🔍 Buscar cliente..." style=${{flex:1,minWidth:150,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 14px',color:C.text,fontSize:13,outline:'none'}}/>
+      <${Btn} color=${soSumidos?C.red:C.muted} onClick=${()=>setSoSumidos(s=>!s)}>${soSumidos?'✓ ':''}Sumidos</${Btn}>
       <${Btn} onClick=${()=>setModal({})}>+ Cliente</${Btn}>
     </div>
-    ${loading?html`<${Spin}/>`:fil.length===0?html`<${Empty} msg="Nenhum cliente cadastrado"/>`:fil.map(c=>html`<div key=${c.id} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,marginBottom:8}}>
+    ${loading?html`<${Spin}/>`:fil.length===0?html`<${Empty} msg="Nenhum cliente encontrado"/>`:fil.map(c=>{
+      const st=c._stats;
+      return html`<div key=${c.id} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,borderLeft:st.sumido?`3px solid ${C.red}`:`3px solid ${C.border}`,marginBottom:8}}>
       <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
         <div><div style=${{fontSize:13,color:C.text,fontWeight:700}}>${c.nome}</div>
-          <div style=${{marginTop:4}}>${c.setor&&html`<${Badge} label=${c.setor} color=${C.blue}/>`}</div></div>
+          <div style=${{marginTop:4,display:'flex',gap:6,flexWrap:'wrap'}}>
+            ${c.setor&&html`<${Badge} label=${c.setor} color=${C.blue}/>`}
+            ${st.sumido&&html`<${Badge} label=${st.qtdPedidos===0?'Nunca comprou':'Sumido'} color=${C.red}/>`}
+          </div>
+        </div>
+      </div>
+      <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:7,marginTop:10}}>
+        <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}>
+          <div style=${{fontSize:13,color:C.gold,fontWeight:800}}>${st.qtdPedidos}</div>
+          <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Pedidos</div>
+        </div>
+        <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}>
+          <div style=${{fontSize:11,color:C.green,fontWeight:800}}>${st.totalComprado>0?fmt(st.totalComprado):'—'}</div>
+          <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Total</div>
+        </div>
+        <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}>
+          <div style=${{fontSize:11,color:st.sumido?C.red:C.text,fontWeight:800}}>${st.ultimaData?`${st.diasSemComprar}d atrás`:'Nunca'}</div>
+          <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Últ. Compra</div>
+        </div>
       </div>
       <div style=${{marginTop:8,display:'flex',gap:12,flexWrap:'wrap'}}>
         ${c.email&&html`<span style=${{fontSize:11,color:C.muted}}>✉️ ${c.email}</span>`}
@@ -746,7 +842,7 @@ function Clientes({db,isMobile}){
         <${Btn} small onClick=${()=>setModal({item:c})}>✏️ Editar</${Btn}>
         <${Btn} small color=${C.red} onClick=${()=>del(c.id)}>🗑 Excluir</${Btn}>
       </div>
-    </div>`)}
+    </div>`;})}
     ${modal!==null&&html`<${Modal} title=${modal.item?'Editar Cliente':'Novo Cliente'} onClose=${()=>setModal(null)}>
       <${FormCliente} db=${db} item=${modal.item} onDone=${ok=>{setModal(null);if(ok)load();}}/>
     </${Modal}>`}
@@ -755,50 +851,53 @@ function Clientes({db,isMobile}){
 
 // ── SEÇÃO: ESTOQUE ────────────────────────────────────────────────────────────
 function Estoque({db,isMobile}){
+  // NOTA: esta seção agora funciona como Catálogo de Preços de Referência
   const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);
   const [busca,setBusca]=useState('');const [modal,setModal]=useState(null);
+  const [cat,setCat]=useState('');
   const load=useCallback(async()=>{setLoading(true);try{setRows(await db.get('produtos'));}catch{}finally{setLoading(false);}  },[]);
   useEffect(()=>{load();},[]);
-  const del=async id=>{if(!confirm('Excluir produto?'))return;await db.del('produtos',id);load();};
-  const fil=rows.filter(p=>p.nome?.toLowerCase().includes(busca.toLowerCase())||p.categoria?.toLowerCase().includes(busca.toLowerCase()));
-  const crit=rows.filter(p=>pSt(p.quantidade,p.estoque_minimo)!=='OK');
+  const del=async id=>{if(!confirm('Remover item do catálogo?'))return;await db.del('produtos',id);load();};
+  const categorias=[...new Set(rows.map(p=>p.categoria).filter(Boolean))];
+  const fil=rows.filter(p=>{
+    const matchBusca=p.nome?.toLowerCase().includes(busca.toLowerCase())||p.categoria?.toLowerCase().includes(busca.toLowerCase());
+    const matchCat=!cat||p.categoria===cat;
+    return matchBusca&&matchCat;
+  });
+  const precoMedio=rows.length>0?rows.reduce((s,p)=>s+ +p.preco,0)/rows.length:0;
+  const margens=rows.filter(p=>+p.preco>0).map(p=>((p.preco-p.custo)/p.preco)*100);
+  const margemMedia=margens.length>0?Math.round(margens.reduce((s,m)=>s+m,0)/margens.length):0;
+
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
     <${KpiGrid} isMobile=${isMobile}>
-      <${KpiCard} title="Total SKUs" value=${rows.length} sub="itens" icon="📦" color=${C.blue}/>
-      <${KpiCard} title="Crítico/Baixo" value=${crit.length} sub="reposição" icon="🚨" color=${C.red}/>
-      <${KpiCard} title="Valor Estoque" value=${fmt(rows.reduce((s,p)=>s+p.quantidade*p.custo,0))} sub="custo total" icon="💎" color=${C.green}/>
-      <${KpiCard} title="Itens OK" value=${rows.filter(p=>pSt(p.quantidade,p.estoque_minimo)==='OK').length} sub="bem estocados" icon="✅" color=${C.gold}/>
+      <${KpiCard} title="Itens no Catálogo" value=${rows.length} sub="cadastrados" icon="🏷️" color=${C.blue}/>
+      <${KpiCard} title="Categorias" value=${categorias.length} sub="diferentes" icon="📁" color=${C.purple}/>
+      <${KpiCard} title="Preço Médio" value=${fmt(precoMedio)} sub="por item" icon="💲" color=${C.gold}/>
+      <${KpiCard} title="Margem Média" value=${margemMedia+'%'} sub="do catálogo" icon="📈" color=${C.green}/>
     </${KpiGrid}>
-    ${crit.length>0&&html`<div style=${{background:C.red+'11',border:`1px solid ${C.red}33`,borderRadius:12,padding:12}}>
-      <div style=${{fontWeight:700,color:C.red,fontSize:12,marginBottom:8}}>🚨 Reposição Necessária</div>
-      ${crit.map(p=>{const st=pSt(p.quantidade,p.estoque_minimo);return html`<div key=${p.id} style=${{display:'flex',justifyContent:'space-between',alignItems:'center',background:C.card,borderRadius:8,padding:'8px 10px',marginBottom:6}}>
-        <span style=${{fontSize:12,color:C.text,fontWeight:600}}>${p.nome} <span style=${{color:C.muted,fontSize:10}}>(${p.quantidade}/${p.estoque_minimo})</span></span>
-        <${Badge} label=${st} color=${pCor(st)}/>
-      </div>`;})}
-    </div>`}
-    <div style=${{display:'flex',gap:10}}>
-      <input value=${busca} onInput=${e=>setBusca(e.target.value)} placeholder="🔍 Buscar produto..." style=${{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 14px',color:C.text,fontSize:13,outline:'none'}}/>
-      <${Btn} onClick=${()=>setModal({})}>+ Produto</${Btn}>
+    <div style=${{display:'flex',gap:10,flexWrap:'wrap'}}>
+      <input value=${busca} onInput=${e=>setBusca(e.target.value)} placeholder="🔍 Buscar item ou categoria..." style=${{flex:1,minWidth:150,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 14px',color:C.text,fontSize:13,outline:'none'}}/>
+      <${Btn} onClick=${()=>setModal({})}>+ Item</${Btn}>
     </div>
-    ${loading?html`<${Spin}/>`:fil.length===0?html`<${Empty}/>`:fil.map(p=>{
-      const st=pSt(p.quantidade,p.estoque_minimo);const cor=pCor(st);
+    ${categorias.length>0&&html`<div style=${{display:'flex',gap:6,flexWrap:'wrap'}}>
+      <button onClick=${()=>setCat('')} style=${{background:!cat?C.gold+'22':C.card,color:!cat?C.gold:C.muted,border:`1px solid ${!cat?C.gold+'44':C.border}`,borderRadius:20,padding:'4px 12px',fontSize:11,cursor:'pointer',fontWeight:600}}>Todas</button>
+      ${categorias.map(cg=>html`<button key=${cg} onClick=${()=>setCat(cg)} style=${{background:cat===cg?C.gold+'22':C.card,color:cat===cg?C.gold:C.muted,border:`1px solid ${cat===cg?C.gold+'44':C.border}`,borderRadius:20,padding:'4px 12px',fontSize:11,cursor:'pointer',fontWeight:600}}>${cg}</button>`)}
+    </div>`}
+    ${loading?html`<${Spin}/>`:fil.length===0?html`<${Empty} msg="Nenhum item no catálogo"/>`:fil.map(p=>{
       const mg=p.preco>0?Math.round(((p.preco-p.custo)/p.preco)*100):0;
-      const cb=p.estoque_minimo>0?Math.min(100,Math.round((p.quantidade/p.estoque_minimo)*100)):100;
-      return html`<div key=${p.id} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,borderLeft:`3px solid ${cor}`,marginBottom:8}}>
+      return html`<div key=${p.id} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,marginBottom:8}}>
         <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
           <div style=${{flex:1,marginRight:8}}><div style=${{fontSize:13,color:C.text,fontWeight:700}}>${p.nome}</div><div style=${{fontSize:10,color:C.muted}}>${p.categoria}</div></div>
-          <${Badge} label=${st} color=${cor}/>
         </div>
         <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:7,marginTop:10}}>
-          <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}><div style=${{fontSize:15,color:cor,fontWeight:800}}>${fmtN(p.quantidade)}</div><div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Qtd</div></div>
-          <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}><div style=${{fontSize:14,color:C.gold,fontWeight:800}}>${mg}%</div><div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Margem</div></div>
+          <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}><div style=${{fontSize:12,color:C.muted,fontWeight:700}}>${fmt(p.custo)}</div><div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Custo</div></div>
           <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}><div style=${{fontSize:12,color:C.text,fontWeight:700}}>${fmt(p.preco)}</div><div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Preço</div></div>
+          <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}><div style=${{fontSize:14,color:mg>=0?C.green:C.red,fontWeight:800}}>${mg}%</div><div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Margem</div></div>
         </div>
-        <div style=${{display:'flex',alignItems:'center',gap:8,marginTop:9}}><${PBar} value=${cb} color=${cb<60?C.red:cb<100?C.gold:C.green}/><span style=${{fontSize:9,color:C.muted,minWidth:35}}>${cb}% mín</span></div>
-        <div style=${{display:'flex',gap:7,marginTop:10}}><${Btn} small onClick=${()=>setModal({item:p})}>✏️ Editar</${Btn}><${Btn} small color=${C.red} onClick=${()=>del(p.id)}>🗑 Excluir</${Btn}></div>
+        <div style=${{display:'flex',gap:7,marginTop:10}}><${Btn} small onClick=${()=>setModal({item:p})}>✏️ Editar</${Btn}><${Btn} small color=${C.red} onClick=${()=>del(p.id)}>🗑 Remover</${Btn}></div>
       </div>`;
     })}
-    ${modal!==null&&html`<${Modal} title=${modal.item?'Editar Produto':'Novo Produto'} onClose=${()=>setModal(null)}>
+    ${modal!==null&&html`<${Modal} title=${modal.item?'Editar Item':'Novo Item do Catálogo'} onClose=${()=>setModal(null)}>
       <${FormProduto} db=${db} item=${modal.item} onDone=${ok=>{setModal(null);if(ok)load();}}/>
     </${Modal}>`}
   </div>`;
@@ -1058,14 +1157,14 @@ const MENU_G=[
   {id:'financeiro',label:'Financeiro',icon:'💰'},
   {id:'pedidos',   label:'Pedidos',   icon:'📋'},
   {id:'clientes',  label:'Clientes',  icon:'🏢'},
-  {id:'estoque',   label:'Estoque',   icon:'📦'},
+  {id:'estoque',   label:'Catálogo',  icon:'🏷️'},
   {id:'metas',     label:'Metas',     icon:'🎯'},
   {id:'historico', label:'Histórico', icon:'📅'},
 ];
 const MENU_A=[
   {id:'pedidos',   label:'Pedidos',   icon:'📋'},
   {id:'clientes',  label:'Clientes',  icon:'🏢'},
-  {id:'estoque',   label:'Estoque',   icon:'📦'},
+  {id:'estoque',   label:'Catálogo',  icon:'🏷️'},
   {id:'financeiro',label:'Financeiro',icon:'💰'},
   {id:'metas',     label:'Metas',     icon:'🎯'},
   {id:'historico', label:'Histórico', icon:'📅'},
