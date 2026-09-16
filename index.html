@@ -456,6 +456,52 @@ function FormLanc({db,onDone}){
 }
 
 // ── SEÇÃO: DASHBOARD ──────────────────────────────────────────────────────────
+// ── CARD: RANKING DE VENDEDORES ───────────────────────────────────────────────
+function RankingVendedores({hojeLista,mesLista,isMobile}){
+  const map={};
+  mesLista.forEach(v=>{
+    const n=v.vendedor_nome||'Sem identificação';
+    if(!map[n]) map[n]={nome:n,hoje:0,mes:0};
+    map[n].mes+= +v.valor_total;
+  });
+  hojeLista.forEach(v=>{
+    const n=v.vendedor_nome||'Sem identificação';
+    if(!map[n]) map[n]={nome:n,hoje:0,mes:0};
+    map[n].hoje+= +v.valor_total;
+  });
+  const lista=Object.values(map).sort((a,b)=>b.mes-a.mes);
+  if(!lista.length) return html`<${Empty} msg="Nenhuma venda registrada no mês"/>`;
+  const maxMes=lista[0].mes||1;
+  const medalha=['🥇','🥈','🥉'];
+  const cores=[C.gold,C.muted,'#CD7F32',C.blue,C.purple];
+  return html`<div>
+    <${SecTitle}>🏆 Ranking de Vendedores — ${MESES[MES_ATUAL-1]}</${SecTitle}>
+    ${lista.map((v,i)=>html`<div key=${v.nome} style=${{background:C.surface,borderRadius:10,padding:'10px 12px',marginBottom:i<lista.length-1?8:0,borderLeft:`3px solid ${cores[Math.min(i,4)]}`}}>
+      <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:7}}>
+        <div style=${{display:'flex',alignItems:'center',gap:8}}>
+          <span style=${{fontSize:14,lineHeight:1}}>${medalha[i]||`${i+1}º`}</span>
+          <span style=${{fontSize:13,color:C.text,fontWeight:700}}>${v.nome}</span>
+        </div>
+        <span style=${{fontSize:13,color:C.gold,fontWeight:800}}>${fmt(v.mes)}</span>
+      </div>
+      <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:7,marginBottom:7}}>
+        <div style=${{background:C.card,borderRadius:8,padding:'6px 10px'}}>
+          <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase',letterSpacing:.6,fontWeight:700}}>Vendido Hoje</div>
+          <div style=${{fontSize:15,color:v.hoje>0?C.green:C.muted,fontWeight:800}}>${v.hoje>0?fmt(v.hoje):'—'}</div>
+        </div>
+        <div style=${{background:C.card,borderRadius:8,padding:'6px 10px'}}>
+          <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase',letterSpacing:.6,fontWeight:700}}>Acumulado ${MESES[MES_ATUAL-1].slice(0,3)}</div>
+          <div style=${{fontSize:15,color:C.gold,fontWeight:800}}>${fmt(v.mes)}</div>
+        </div>
+      </div>
+      <div style=${{display:'flex',alignItems:'center',gap:8}}>
+        <${PBar} value=${maxMes>0?(v.mes/maxMes)*100:0} color=${cores[Math.min(i,4)]}/>
+        <span style=${{fontSize:9,color:C.muted,minWidth:30,textAlign:'right'}}>${maxMes>0?Math.round((v.mes/maxMes)*100):0}%</span>
+      </div>
+    </div>`)}
+  </div>`;
+}
+
 // ── GRÁFICO: GAUGE META ───────────────────────────────────────────────────────
 function GaugeMeta({valor,meta}){
   const pct=meta>0?Math.min(1,valor/meta):0;
@@ -525,7 +571,7 @@ function BarRecDesp({dados,height=160}){
 }
 
 function Dashboard({db,isMobile}){
-  const [data,setData]=useState({pedidos:[],lancMes:[],despMes:[],receber:[],meta:0,chartData:[],vendasHoje:0});
+  const [data,setData]=useState({pedidos:[],lancMes:[],despMes:[],receber:[],meta:0,chartData:[],vendasHoje:0,vendasHojeLista:[],vendasMesLista:[]});
   const [loading,setLoading]=useState(true);
   useEffect(()=>{
     (async()=>{
@@ -535,14 +581,15 @@ function Dashboard({db,isMobile}){
         const d6=new Date(ANO_ATUAL,MES_ATUAL-7,1);
         const d6str=`${d6.getFullYear()}-${mesStr(d6.getMonth()+1)}-01`;
         const hojeStr=new Date().toISOString().slice(0,10);
-        const [pedidos,lancMes,despMes,receber,metas,lanc6m,vendasHj]=await Promise.all([
+        const [pedidos,lancMes,despMes,receber,metas,lanc6m,vendasHj,vendasMes]=await Promise.all([
           db.get('pedidos'),
           db.get('lancamentos',`tipo=eq.receita&data=gte.${ANO_ATUAL}-${mesStr(MES_ATUAL)}-01&data=lt.${proxMes}`),
           db.get('lancamentos',`tipo=eq.despesa&data=gte.${ANO_ATUAL}-${mesStr(MES_ATUAL)}-01&data=lt.${proxMes}`),
           db.get('contas_receber'),
           db.get('metas',`ano=eq.${ANO_ATUAL}&mes=eq.${MES_ATUAL}`),
           db.get('lancamentos',`data=gte.${d6str}&order=data.asc`),
-          db.get('vendas',`data=eq.${hojeStr}`)
+          db.get('vendas',`data=eq.${hojeStr}`),
+          db.get('vendas',`data=gte.${ANO_ATUAL}-${mesStr(MES_ATUAL)}-01&data=lt.${proxMes}`)
         ]);
         const vendasHoje=vendasHj.reduce((s,v)=>s+ +v.valor_total,0);
         const porMes={};
@@ -552,7 +599,7 @@ function Dashboard({db,isMobile}){
           porMes[m][l.tipo]+= +l.valor;
         });
         const chartData=Object.entries(porMes).sort(([a],[b])=>a.localeCompare(b)).slice(-6).map(([,v])=>v);
-        setData({pedidos,lancMes,despMes,receber,meta:metas?.[0]?.valor||0,chartData,vendasHoje});
+        setData({pedidos,lancMes,despMes,receber,meta:metas?.[0]?.valor||0,chartData,vendasHoje,vendasHojeLista:vendasHj,vendasMesLista:vendasMes});
       }catch{}finally{setLoading(false);}
     })();
   },[]);
@@ -592,6 +639,9 @@ function Dashboard({db,isMobile}){
         <${BarRecDesp} dados=${data.chartData} height=${isMobile?150:170}/>
       </${Card}>
     </div>
+    <${Card}>
+      <${RankingVendedores} hojeLista=${data.vendasHojeLista} mesLista=${data.vendasMesLista} isMobile=${isMobile}/>
+    </${Card}>
     ${prazosAlerta.length>0&&html`<div style=${{background:C.red+'11',border:`1px solid ${C.red}33`,borderRadius:12,padding:12}}>
       <div style=${{fontWeight:700,color:C.red,fontSize:12,marginBottom:8}}>⏰ Prazos Próximos ou Atrasados</div>
       <div style=${{display:'flex',flexDirection:'column',gap:6}}>
