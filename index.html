@@ -525,7 +525,7 @@ function BarRecDesp({dados,height=160}){
 }
 
 function Dashboard({db,isMobile}){
-  const [data,setData]=useState({pedidos:[],lancMes:[],despMes:[],receber:[],meta:0,chartData:[]});
+  const [data,setData]=useState({pedidos:[],lancMes:[],despMes:[],receber:[],meta:0,chartData:[],vendasHoje:0});
   const [loading,setLoading]=useState(true);
   useEffect(()=>{
     (async()=>{
@@ -534,14 +534,17 @@ function Dashboard({db,isMobile}){
         const proxMes=MES_ATUAL===12?`${ANO_ATUAL+1}-01-01`:`${ANO_ATUAL}-${mesStr(MES_ATUAL+1)}-01`;
         const d6=new Date(ANO_ATUAL,MES_ATUAL-7,1);
         const d6str=`${d6.getFullYear()}-${mesStr(d6.getMonth()+1)}-01`;
-        const [pedidos,lancMes,despMes,receber,metas,lanc6m]=await Promise.all([
+        const hojeStr=new Date().toISOString().slice(0,10);
+        const [pedidos,lancMes,despMes,receber,metas,lanc6m,vendasHj]=await Promise.all([
           db.get('pedidos'),
           db.get('lancamentos',`tipo=eq.receita&data=gte.${ANO_ATUAL}-${mesStr(MES_ATUAL)}-01&data=lt.${proxMes}`),
           db.get('lancamentos',`tipo=eq.despesa&data=gte.${ANO_ATUAL}-${mesStr(MES_ATUAL)}-01&data=lt.${proxMes}`),
           db.get('contas_receber'),
           db.get('metas',`ano=eq.${ANO_ATUAL}&mes=eq.${MES_ATUAL}`),
-          db.get('lancamentos',`data=gte.${d6str}&order=data.asc`)
+          db.get('lancamentos',`data=gte.${d6str}&order=data.asc`),
+          db.get('vendas',`data=eq.${hojeStr}`)
         ]);
+        const vendasHoje=vendasHj.reduce((s,v)=>s+ +v.valor_total,0);
         const porMes={};
         lanc6m.forEach(l=>{
           const m=l.data?.slice(0,7)||'';if(!m)return;
@@ -549,7 +552,7 @@ function Dashboard({db,isMobile}){
           porMes[m][l.tipo]+= +l.valor;
         });
         const chartData=Object.entries(porMes).sort(([a],[b])=>a.localeCompare(b)).slice(-6).map(([,v])=>v);
-        setData({pedidos,lancMes,despMes,receber,meta:metas?.[0]?.valor||0,chartData});
+        setData({pedidos,lancMes,despMes,receber,meta:metas?.[0]?.valor||0,chartData,vendasHoje});
       }catch{}finally{setLoading(false);}
     })();
   },[]);
@@ -573,6 +576,7 @@ function Dashboard({db,isMobile}){
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
     <div style=${{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(auto-fit,minmax(155px,1fr))',gap:10}}>
       <${MetaCard} metaMes=${data.meta} receitaMes=${recMes} isMobile=${isMobile}/>
+      <${KpiCard} title="Vendas de Hoje" value=${fmt(data.vendasHoje)} sub="acumula na receita" icon="💵" color=${C.green}/>
       <${KpiCard} title="Receita do Mês" value=${fmt(recMes)} sub=${MESES[MES_ATUAL-1]} icon="💰" color=${C.green}/>
       <${KpiCard} title="Despesas do Mês" value=${fmt(despMes)} sub=${MESES[MES_ATUAL-1]} icon="📤" color=${C.red}/>
       <${KpiCard} title="Resultado do Mês" value=${fmt(resultado)} sub="receita − despesa" icon="📊" color=${resultado>=0?C.green:C.red}/>
@@ -1160,6 +1164,114 @@ function Historico({db,isMobile}){
   </div>`;
 }
 
+// ── FORM: NOVA VENDA ──────────────────────────────────────────────────────────
+function FormVenda({db,session,onDone}){
+  const [f,setF]=useState({item:'',quantidade:1,valor_unitario:0,valor_total:0});
+  const [autoTotal,setAutoTotal]=useState(true);
+  const [loading,setLoading]=useState(false);const [err,setErr]=useState('');
+  const set=k=>e=>setF(p=>{
+    const nv={...p,[k]:e.target.value};
+    // Calcula total automaticamente se o usuário não editou o total manualmente
+    if((k==='quantidade'||k==='valor_unitario')&&autoTotal){
+      nv.valor_total=((+nv.quantidade||0)*(+nv.valor_unitario||0)).toFixed(2);
+    }
+    return nv;
+  });
+  const setTotal=e=>{setAutoTotal(false);setF(p=>({...p,valor_total:e.target.value}));};
+  const save=async()=>{
+    if(!f.item) return setErr('Informe o item/produto.');
+    if(+f.valor_total<=0) return setErr('O valor total deve ser maior que zero.');
+    setLoading(true);setErr('');
+    try{
+      const hoje=new Date().toISOString().slice(0,10);
+      // 1. Cria o lançamento de receita
+      const lanc=await db.post('lancamentos',{
+        tipo:'receita',
+        descricao:`Venda: ${f.item} (${session.nome})`,
+        valor:+f.valor_total,
+        data:hoje,
+        categoria:'Venda do Dia'
+      });
+      const lancId=lanc?.[0]?.id||null;
+      // 2. Registra a venda
+      await db.post('vendas',{
+        item:f.item,
+        quantidade:+f.quantidade||1,
+        valor_unitario:+f.valor_unitario||0,
+        valor_total:+f.valor_total,
+        data:hoje,
+        vendedor_nome:session.nome,
+        vendedor_id:session.userId,
+        lancamento_id:lancId
+      });
+      onDone(true);
+    }catch(e){setErr(e.message);}finally{setLoading(false);}
+  };
+  return html`<div>
+    <${Inp} label="Item / Produto" value=${f.item} onInput=${set('item')}/>
+    <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+      <${Inp} label="Quantidade" type="number" step="0.01" value=${f.quantidade} onInput=${set('quantidade')}/>
+      <${Inp} label="Valor Unitário (R$)" type="number" step="0.01" value=${f.valor_unitario} onInput=${set('valor_unitario')}/>
+    </div>
+    <${Inp} label="Valor Total da Venda (R$)" type="number" step="0.01" value=${f.valor_total} onInput=${setTotal}/>
+    <div style=${{background:C.green+'11',border:`1px solid ${C.green}33`,borderRadius:8,padding:'8px 12px',fontSize:11,color:C.green,marginBottom:10,lineHeight:1.6}}>
+      ✓ Será registrada como <strong>Receita</strong> de hoje, em nome de <strong>${session.nome}</strong>
+    </div>
+    ${err&&html`<${ErrBox} msg=${err}/>`}
+    <${Btn} full onClick=${save} disabled=${loading}>${loading?'Registrando...':'Registrar Venda'}</${Btn}>
+  </div>`;
+}
+
+// ── SEÇÃO: VENDAS DO DIA ──────────────────────────────────────────────────────
+function VendasDia({db,session,isMobile}){
+  const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);const [modal,setModal]=useState(false);
+  const hoje=new Date().toISOString().slice(0,10);
+  const load=useCallback(async()=>{
+    setLoading(true);
+    try{setRows(await db.get('vendas',`data=eq.${hoje}`));}catch{}finally{setLoading(false);}
+  },[]);
+  useEffect(()=>{load();},[]);
+  const del=async(v)=>{
+    if(!confirm('Excluir esta venda? A receita correspondente também será removida.'))return;
+    try{
+      if(v.lancamento_id) await db.del('lancamentos',v.lancamento_id);
+      await db.del('vendas',v.id);
+    }catch{}
+    load();
+  };
+  const totalDia=rows.reduce((s,v)=>s+ +v.valor_total,0);
+  const itensVendidos=rows.reduce((s,v)=>s+ +v.quantidade,0);
+  return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
+    <${KpiGrid} isMobile=${isMobile}>
+      <${KpiCard} title="Vendas de Hoje" value=${fmt(totalDia)} sub=${new Date().toLocaleDateString('pt-BR')} icon="💵" color=${C.green}/>
+      <${KpiCard} title="Nº de Vendas" value=${rows.length} sub="registradas hoje" icon="🧾" color=${C.blue}/>
+      <${KpiCard} title="Itens Vendidos" value=${fmtN(itensVendidos)} sub="unidades" icon="📦" color=${C.purple}/>
+    </${KpiGrid}>
+    <div style=${{display:'flex',justifyContent:'flex-end'}}><${Btn} onClick=${()=>setModal(true)}>+ Nova Venda</${Btn}></div>
+    ${loading?html`<${Spin}/>`:rows.length===0?html`<${Empty} msg="Nenhuma venda registrada hoje"/>`:rows.map(v=>html`
+      <div key=${v.id} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,borderLeft:`3px solid ${C.green}`,marginBottom:8}}>
+        <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+          <div style=${{flex:1,marginRight:8}}>
+            <div style=${{fontSize:13,color:C.text,fontWeight:700}}>${v.item}</div>
+            <div style=${{fontSize:10,color:C.muted,marginTop:2}}>${fmtN(v.quantidade)} × ${fmt(v.valor_unitario)}</div>
+          </div>
+          <div style=${{fontSize:15,color:C.green,fontWeight:800}}>${fmt(v.valor_total)}</div>
+        </div>
+        <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:8}}>
+          <span style=${{fontSize:10,color:C.muted}}>👤 ${v.vendedor_nome||'—'}</span>
+          <${Btn} small color=${C.red} onClick=${()=>del(v)}>🗑 Excluir</${Btn}>
+        </div>
+      </div>`)}
+    ${rows.length>0&&html`<div style=${{background:C.surface,borderRadius:10,padding:'12px 14px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+      <span style=${{fontSize:13,color:C.muted,fontWeight:600}}>Total do Dia</span>
+      <span style=${{fontSize:18,color:C.green,fontWeight:800}}>${fmt(totalDia)}</span>
+    </div>`}
+    ${modal&&html`<${Modal} title="Nova Venda" onClose=${()=>setModal(false)}>
+      <${FormVenda} db=${db} session=${session} onDone=${ok=>{setModal(false);if(ok)load();}}/>
+    </${Modal}>`}
+  </div>`;
+}
+
 // ── FORM: NOVO USUÁRIO ────────────────────────────────────────────────────────
 function FormUsuario({url,sbKey,db,onDone}){
   const [f,setF]=useState({nome:'',email:'',senha:'',role:'administrativo'});
@@ -1247,6 +1359,7 @@ function Configuracao({db,url,sbKey,session,isMobile}){
 
 const MENU_G=[
   {id:'dashboard', label:'Dashboard', icon:'📊'},
+  {id:'vendas',    label:'Vendas do Dia',icon:'💵'},
   {id:'financeiro',label:'Financeiro',icon:'💰'},
   {id:'pedidos',   label:'Pedidos',   icon:'📋'},
   {id:'clientes',  label:'Clientes',  icon:'🏢'},
@@ -1256,6 +1369,7 @@ const MENU_G=[
   {id:'config',    label:'Configuração',icon:'⚙️'},
 ];
 const MENU_A=[
+  {id:'vendas',    label:'Vendas do Dia',icon:'💵'},
   {id:'pedidos',   label:'Pedidos',   icon:'📋'},
   {id:'clientes',  label:'Clientes',  icon:'🏢'},
   {id:'estoque',   label:'Catálogo',  icon:'🏷️'},
@@ -1313,6 +1427,7 @@ function App(){
         ${isMobile&&html`<button onClick=${logout} style=${{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:12}}>Sair</button>`}
       </div>
       ${pag==='dashboard'  &&html`<${Dashboard}  ...${pr}/>`}
+      ${pag==='vendas'     &&html`<${VendasDia}  ...${pr} session=${sess}/>`}
       ${pag==='financeiro' &&html`<${Financeiro} ...${pr} role=${sess.role}/>`}
       ${pag==='pedidos'    &&html`<${Pedidos}    ...${pr}/>`}
       ${pag==='clientes'   &&html`<${Clientes}   ...${pr}/>`}
