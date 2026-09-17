@@ -1270,13 +1270,26 @@ function FormVenda({db,session,onDone}){
 
 // ── SEÇÃO: VENDAS DO DIA ──────────────────────────────────────────────────────
 function VendasDia({db,session,isMobile}){
-  const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);const [modal,setModal]=useState(false);
   const hoje=new Date().toISOString().slice(0,10);
+  const [dataSel,setDataSel]=useState(hoje);
+  const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);const [modal,setModal]=useState(false);
+  const isHoje=dataSel===hoje;
+
   const load=useCallback(async()=>{
     setLoading(true);
-    try{setRows(await db.get('vendas',`data=eq.${hoje}`));}catch{}finally{setLoading(false);}
-  },[]);
-  useEffect(()=>{load();},[]);
+    try{setRows(await db.get('vendas',`data=eq.${dataSel}`));}catch{}finally{setLoading(false);}
+  },[dataSel]);
+  useEffect(()=>{load();},[dataSel]);
+
+  const navDia=delta=>{
+    const d=new Date(dataSel+'T12:00:00');
+    d.setDate(d.getDate()+delta);
+    const nova=d.toISOString().slice(0,10);
+    if(nova<=hoje) setDataSel(nova);
+  };
+
+  const dataFmt=new Date(dataSel+'T12:00:00').toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long'});
+
   const del=async(v)=>{
     if(!confirm('Excluir esta venda? A receita correspondente também será removida.'))return;
     try{
@@ -1288,13 +1301,27 @@ function VendasDia({db,session,isMobile}){
   const totalDia=rows.reduce((s,v)=>s+ +v.valor_total,0);
   const itensVendidos=rows.reduce((s,v)=>s+ +v.quantidade,0);
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
+    <div style=${{display:'flex',alignItems:'center',gap:10,background:C.card,borderRadius:12,padding:'12px 14px',border:`1px solid ${isHoje?C.gold+'44':C.border}`}}>
+      <button onClick=${()=>navDia(-1)} style=${{background:C.surface,border:`1px solid ${C.border}`,color:C.muted,borderRadius:8,padding:'8px 16px',cursor:'pointer',fontSize:18,lineHeight:1,flexShrink:0}}>‹</button>
+      <div style=${{flex:1,textAlign:'center'}}>
+        ${isHoje
+          ? html`<div style=${{fontSize:15,fontWeight:800,color:C.gold}}>Hoje</div>
+                 <div style=${{fontSize:11,color:C.muted,marginTop:2}}>${new Date(dataSel+'T12:00:00').toLocaleDateString('pt-BR')}</div>`
+          : html`<div style=${{fontSize:14,fontWeight:700,color:C.text,textTransform:'capitalize'}}>${dataFmt}</div>
+                 <button onClick=${()=>setDataSel(hoje)} style=${{background:'none',border:'none',color:C.gold,fontSize:10,cursor:'pointer',marginTop:3,fontWeight:700}}>Ir para hoje →</button>`
+        }
+      </div>
+      <button onClick=${()=>navDia(1)} disabled=${isHoje} style=${{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:'8px 16px',fontSize:18,lineHeight:1,flexShrink:0,cursor:isHoje?'not-allowed':'pointer',color:isHoje?C.border:C.muted,opacity:isHoje?.35:1}}>›</button>
+    </div>
     <${KpiGrid} isMobile=${isMobile}>
-      <${KpiCard} title="Vendas de Hoje" value=${fmt(totalDia)} sub=${new Date().toLocaleDateString('pt-BR')} icon="💵" color=${C.green}/>
-      <${KpiCard} title="Nº de Vendas" value=${rows.length} sub="registradas hoje" icon="🧾" color=${C.blue}/>
+      <${KpiCard} title=${isHoje?'Vendas de Hoje':'Total do Dia'} value=${fmt(totalDia)} sub=${new Date(dataSel+'T12:00:00').toLocaleDateString('pt-BR')} icon="💵" color=${C.green}/>
+      <${KpiCard} title="Nº de Vendas" value=${rows.length} sub=${isHoje?'registradas hoje':'neste dia'} icon="🧾" color=${C.blue}/>
       <${KpiCard} title="Itens Vendidos" value=${fmtN(itensVendidos)} sub="unidades" icon="📦" color=${C.purple}/>
     </${KpiGrid}>
-    <div style=${{display:'flex',justifyContent:'flex-end'}}><${Btn} onClick=${()=>setModal(true)}>+ Nova Venda</${Btn}></div>
-    ${loading?html`<${Spin}/>`:rows.length===0?html`<${Empty} msg="Nenhuma venda registrada hoje"/>`:rows.map(v=>html`
+    ${isHoje&&html`<div style=${{display:'flex',justifyContent:'flex-end'}}><${Btn} onClick=${()=>setModal(true)}>+ Nova Venda</${Btn}></div>`}
+    ${loading?html`<${Spin}/>`:rows.length===0
+      ?html`<${Empty} msg=${isHoje?'Nenhuma venda registrada hoje':'Nenhuma venda registrada neste dia'}/>`
+      :rows.map(v=>html`
       <div key=${v.id} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,borderLeft:`3px solid ${C.green}`,marginBottom:8}}>
         <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
           <div style=${{flex:1,marginRight:8}}>
