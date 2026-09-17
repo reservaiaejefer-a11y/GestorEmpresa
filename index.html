@@ -456,49 +456,45 @@ function FormLanc({db,onDone}){
 }
 
 // ── SEÇÃO: DASHBOARD ──────────────────────────────────────────────────────────
-// ── CARD: RANKING DE VENDEDORES ───────────────────────────────────────────────
-function RankingVendedores({hojeLista,mesLista,isMobile}){
+// ── CARD: ACOMPANHAMENTO DE VENDEDORES ────────────────────────────────────────
+function VendedoresCards({hojeLista,mesLista,isMobile}){
   const map={};
   mesLista.forEach(v=>{
     const n=v.vendedor_nome||'Sem identificação';
-    if(!map[n]) map[n]={nome:n,hoje:0,mes:0};
+    if(!map[n]) map[n]={nome:n,hoje:0,mes:0,qtdHoje:0,qtdMes:0};
     map[n].mes+= +v.valor_total;
+    map[n].qtdMes++;
   });
   hojeLista.forEach(v=>{
     const n=v.vendedor_nome||'Sem identificação';
-    if(!map[n]) map[n]={nome:n,hoje:0,mes:0};
+    if(!map[n]) map[n]={nome:n,hoje:0,mes:0,qtdHoje:0,qtdMes:0};
     map[n].hoje+= +v.valor_total;
+    map[n].qtdHoje++;
   });
-  const lista=Object.values(map).sort((a,b)=>b.mes-a.mes);
+  const lista=Object.values(map).sort((a,b)=>a.nome.localeCompare(b.nome));
   if(!lista.length) return html`<${Empty} msg="Nenhuma venda registrada no mês"/>`;
-  const maxMes=lista[0].mes||1;
-  const medalha=['🥇','🥈','🥉'];
-  const cores=[C.gold,C.muted,'#CD7F32',C.blue,C.purple];
   return html`<div>
-    <${SecTitle}>🏆 Ranking de Vendedores — ${MESES[MES_ATUAL-1]}</${SecTitle}>
-    ${lista.map((v,i)=>html`<div key=${v.nome} style=${{background:C.surface,borderRadius:10,padding:'10px 12px',marginBottom:i<lista.length-1?8:0,borderLeft:`3px solid ${cores[Math.min(i,4)]}`}}>
-      <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:7}}>
-        <div style=${{display:'flex',alignItems:'center',gap:8}}>
-          <span style=${{fontSize:14,lineHeight:1}}>${medalha[i]||`${i+1}º`}</span>
-          <span style=${{fontSize:13,color:C.text,fontWeight:700}}>${v.nome}</span>
+    <${SecTitle}>👤 Vendedores — ${MESES[MES_ATUAL-1]}</${SecTitle}>
+    <div style=${{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(auto-fill,minmax(220px,1fr))',gap:10}}>
+      ${lista.map(v=>html`<div key=${v.nome} style=${{background:C.surface,borderRadius:12,padding:14,border:`1px solid ${C.border}`,borderTop:`3px solid ${v.hoje>0?C.green:C.border}`}}>
+        <div style=${{fontSize:12,color:C.text,fontWeight:800,marginBottom:12,display:'flex',alignItems:'center',gap:7}}>
+          <span style=${{fontSize:16}}>👤</span>
+          <span style=${{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>${v.nome}</span>
         </div>
-        <span style=${{fontSize:13,color:C.gold,fontWeight:800}}>${fmt(v.mes)}</span>
-      </div>
-      <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:7,marginBottom:7}}>
-        <div style=${{background:C.card,borderRadius:8,padding:'6px 10px'}}>
-          <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase',letterSpacing:.6,fontWeight:700}}>Vendido Hoje</div>
-          <div style=${{fontSize:15,color:v.hoje>0?C.green:C.muted,fontWeight:800}}>${v.hoje>0?fmt(v.hoje):'—'}</div>
+        <div style=${{display:'flex',flexDirection:'column',gap:8}}>
+          <div style=${{background:C.card,borderRadius:8,padding:'10px 12px'}}>
+            <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase',letterSpacing:.7,fontWeight:700,marginBottom:4}}>Vendido Hoje</div>
+            <div style=${{fontSize:18,color:v.hoje>0?C.green:C.muted,fontWeight:900,lineHeight:1}}>${v.hoje>0?fmt(v.hoje):'—'}</div>
+            ${v.qtdHoje>0&&html`<div style=${{fontSize:10,color:C.muted,marginTop:3}}>${v.qtdHoje} ${v.qtdHoje===1?'venda':'vendas'}</div>`}
+          </div>
+          <div style=${{background:C.card,borderRadius:8,padding:'10px 12px'}}>
+            <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase',letterSpacing:.7,fontWeight:700,marginBottom:4}}>Acumulado ${MESES[MES_ATUAL-1].slice(0,3)}</div>
+            <div style=${{fontSize:18,color:C.gold,fontWeight:900,lineHeight:1}}>${fmt(v.mes)}</div>
+            ${v.qtdMes>0&&html`<div style=${{fontSize:10,color:C.muted,marginTop:3}}>${v.qtdMes} ${v.qtdMes===1?'venda':'vendas'} no mês</div>`}
+          </div>
         </div>
-        <div style=${{background:C.card,borderRadius:8,padding:'6px 10px'}}>
-          <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase',letterSpacing:.6,fontWeight:700}}>Acumulado ${MESES[MES_ATUAL-1].slice(0,3)}</div>
-          <div style=${{fontSize:15,color:C.gold,fontWeight:800}}>${fmt(v.mes)}</div>
-        </div>
-      </div>
-      <div style=${{display:'flex',alignItems:'center',gap:8}}>
-        <${PBar} value=${maxMes>0?(v.mes/maxMes)*100:0} color=${cores[Math.min(i,4)]}/>
-        <span style=${{fontSize:9,color:C.muted,minWidth:30,textAlign:'right'}}>${maxMes>0?Math.round((v.mes/maxMes)*100):0}%</span>
-      </div>
-    </div>`)}
+      </div>`)}
+    </div>
   </div>`;
 }
 
@@ -640,7 +636,7 @@ function Dashboard({db,isMobile}){
       </${Card}>
     </div>
     <${Card}>
-      <${RankingVendedores} hojeLista=${data.vendasHojeLista} mesLista=${data.vendasMesLista} isMobile=${isMobile}/>
+      <${VendedoresCards} hojeLista=${data.vendasHojeLista} mesLista=${data.vendasMesLista} isMobile=${isMobile}/>
     </${Card}>
     ${prazosAlerta.length>0&&html`<div style=${{background:C.red+'11',border:`1px solid ${C.red}33`,borderRadius:12,padding:12}}>
       <div style=${{fontWeight:700,color:C.red,fontSize:12,marginBottom:8}}>⏰ Prazos Próximos ou Atrasados</div>
