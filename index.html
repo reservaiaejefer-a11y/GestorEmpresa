@@ -1,150 +1,193 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
-  <title>Khaus · Gestão</title>
-  <style>
-    *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-    body{background:#0A0F0D;color:#E8EFF0;font-family:'Segoe UI',sans-serif}
-    input,select,button{font-family:inherit}
-    input[type=range]{accent-color:#3ECBA0;width:100%}
-    ::-webkit-scrollbar{width:3px;height:3px}
-    ::-webkit-scrollbar-thumb{background:#243028;border-radius:3px}
-    #root{min-height:100vh}
-  </style>
-</head>
-<body>
-<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#3ECBA0;font-size:14px">Carregando...</div></div>
-<script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
-<script>
-const { useState, useEffect, useCallback } = React;
-const html = htm.bind(React.createElement);
-
-const C={bg:'#0A0F0D',surface:'#111812',card:'#172019',border:'#243028',
-  gold:'#3ECBA0',green:'#3ECF8E',red:'#F56565',blue:'#4A9EFF',purple:'#9B7FEA',text:'#E8EFF0',muted:'#7A9490'};
-
-// ── SUPABASE ──────────────────────────────────────────────────────────────────
-function mkDB(url,key,token){
-  const h=(e={})=>({apikey:key,Authorization:`Bearer ${token||key}`,'Content-Type':'application/json',...e});
-  const req=async(path,opts={})=>{
-    const res=await fetch(url+path,{...opts,headers:{...h(),...(opts.headers||{})}});
-    if(opts.method==='DELETE') return null;
-    const json=await res.json().catch(()=>({}));
-    if(!res.ok) throw new Error(json.message||json.error_description||'Erro');
-    return json;
+// ── FORM: NOVO USUÁRIO ────────────────────────────────────────────────────────
+function FormUsuario({url,sbKey,db,onDone}){
+  const [f,setF]=useState({nome:'',email:'',senha:'',role:'administrativo'});
+  const [loading,setLoading]=useState(false);const [err,setErr]=useState('');
+  const set=k=>e=>setF(p=>({...p,[k]:e.target.value}));
+  const save=async()=>{
+    if(!f.nome||!f.email||!f.senha) return setErr('Preencha nome, email e senha.');
+    if(f.senha.length<6) return setErr('A senha precisa ter no mínimo 6 caracteres.');
+    setLoading(true);setErr('');
+    try{
+      const su=await sbSignup(url,sbKey,f.email,f.senha);
+      const uid=su?.id||su?.user?.id;
+      if(!uid) throw new Error('Não foi possível obter o ID do novo usuário.');
+      await db.post('profiles',{id:uid,nome:f.nome,role:f.role,email:f.email});
+      onDone(true);
+    }catch(e){setErr(e.message);}finally{setLoading(false);}
   };
-  return {
-    get:(t,qs='')=>req(`/rest/v1/${t}?${qs}&order=created_at.desc`),
-    post:(t,d)=>req(`/rest/v1/${t}`,{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify(d)}),
-    patch:(t,id,d)=>req(`/rest/v1/${t}?id=eq.${id}`,{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify(d)}),
-    del:(t,id)=>req(`/rest/v1/${t}?id=eq.${id}`,{method:'DELETE'}),
-    upsert:(t,d,conflict)=>req(`/rest/v1/${t}?on_conflict=${conflict}`,{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=representation'},body:JSON.stringify(d)})
+  return html`<div>
+    <${Inp} label="Nome" value=${f.nome} onInput=${set('nome')}/>
+    <${Inp} label="Email" type="email" value=${f.email} onInput=${set('email')}/>
+    <${Inp} label="Senha (mínimo 6 caracteres)" type="password" value=${f.senha} onInput=${set('senha')}/>
+    <${Slct} label="Perfil de Acesso" options=${[{v:'gerencial',l:'👑 Administrador — acesso total'},{v:'administrativo',l:'🛍️ Vendedor — acesso operacional'}]} value=${f.role} onChange=${set('role')}/>
+    <div style=${{background:C.surface,borderRadius:8,padding:'8px 12px',fontSize:11,color:C.muted,marginBottom:10,lineHeight:1.6}}>
+      ℹ️ Se a confirmação de email estiver ativa no Supabase, o usuário precisará confirmar antes de logar.
+    </div>
+    ${err&&html`<${ErrBox} msg=${err}/>`}
+    <${Btn} full onClick=${save} disabled=${loading}>${loading?'Criando...':'Criar Usuário'}</${Btn}>
+  </div>`;
+}
+
+// ── SEÇÃO: USUÁRIOS ───────────────────────────────────────────────────────────
+function Usuarios({db,url,sbKey,session,isMobile}){
+  const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);const [modal,setModal]=useState(false);
+  const load=useCallback(async()=>{setLoading(true);try{setRows(await db.get('profiles'));}catch{}finally{setLoading(false);}  },[]);
+  useEffect(()=>{load();},[]);
+  const del=async(row)=>{
+    if(row.id===session.userId) return alert('Você não pode remover o seu próprio acesso.');
+    if(!confirm(`Remover o acesso de ${row.nome} ao sistema?\n\nA conta de login permanece no Supabase — para excluí-la totalmente, remova-a em Authentication → Users.`)) return;
+    await db.del('profiles',row.id);load();
   };
-}
-async function sbLogin(url,key,email,pass){
-  const res=await fetch(`${url}/auth/v1/token?grant_type=password`,{
-    method:'POST',headers:{apikey:key,'Content-Type':'application/json'},body:JSON.stringify({email,password:pass})});
-  const d=await res.json();
-  if(!res.ok) throw new Error(d.error_description||'Email ou senha inválidos');
-  return d;
-}
-async function sbSignup(url,key,email,pass){
-  const res=await fetch(`${url}/auth/v1/signup`,{
-    method:'POST',headers:{apikey:key,'Content-Type':'application/json'},body:JSON.stringify({email,password:pass})});
-  const d=await res.json();
-  if(!res.ok) throw new Error(d.msg||d.error_description||d.message||'Erro ao criar usuário');
-  return d;
+  const admins=rows.filter(r=>r.role==='gerencial').length;
+  const vendedores=rows.filter(r=>r.role==='administrativo').length;
+  return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
+    <${KpiGrid} isMobile=${isMobile}>
+      <${KpiCard} title="Total Usuários" value=${rows.length} sub="cadastrados" icon="👥" color=${C.blue}/>
+      <${KpiCard} title="Administradores" value=${admins} sub="acesso total" icon="👑" color=${C.gold}/>
+      <${KpiCard} title="Vendedores" value=${vendedores} sub="acesso operacional" icon="🛍️" color=${C.purple}/>
+    </${KpiGrid}>
+    <div style=${{display:'flex',justifyContent:'flex-end'}}><${Btn} onClick=${()=>setModal(true)}>+ Novo Usuário</${Btn}></div>
+    ${loading?html`<${Spin}/>`:rows.length===0?html`<${Empty} msg="Nenhum usuário cadastrado"/>`:rows.map(r=>{
+      const cor=r.role==='gerencial'?C.gold:C.blue;
+      const souEu=r.id===session.userId;
+      return html`<div key=${r.id} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,borderLeft:`3px solid ${cor}`,marginBottom:8}}>
+        <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+          <div>
+            <div style=${{fontSize:13,color:C.text,fontWeight:700}}>${r.nome} ${souEu&&html`<span style=${{fontSize:10,color:C.muted}}>(você)</span>`}</div>
+            ${r.email&&html`<div style=${{fontSize:11,color:C.muted,marginTop:2}}>✉️ ${r.email}</div>`}
+          </div>
+          <${Badge} label=${roleLabel(r.role)} color=${cor}/>
+        </div>
+        <div style=${{display:'flex',gap:7,marginTop:10}}>
+          <${Btn} small color=${C.red} disabled=${souEu} onClick=${()=>del(r)}>🗑 Remover Acesso</${Btn}>
+        </div>
+      </div>`;
+    })}
+    ${modal&&html`<${Modal} title="Novo Usuário" onClose=${()=>setModal(false)}>
+      <${FormUsuario} url=${url} sbKey=${sbKey} db=${db} onDone=${ok=>{setModal(false);if(ok)load();}}/>
+    </${Modal}>`}
+  </div>`;
 }
 
-// ── HELPERS ───────────────────────────────────────────────────────────────────
-const fmt=v=>(v??0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
-const fmtN=v=>(v??0).toLocaleString('pt-BR');
-const pSt=(q,m)=>q<=m*0.5?'CRÍTICO':q<=m?'BAIXO':'OK';
-const pCor=s=>s==='CRÍTICO'?C.red:s==='BAIXO'?C.gold:C.green;
-const roleLabel=r=>r==='gerencial'?'Administrador':'Vendedor';
-const MESES=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
-const now=new Date(); const ANO_ATUAL=now.getFullYear(); const MES_ATUAL=now.getMonth()+1;
-const mesStr=m=>String(m).padStart(2,'0');
-function useIsMobile(){
-  const [m,setM]=useState(()=>window.innerWidth<768);
-  useEffect(()=>{const fn=()=>setM(window.innerWidth<768);window.addEventListener('resize',fn);return()=>window.removeEventListener('resize',fn);},[]);
-  return m;
+// ── SEÇÃO: CONFIGURAÇÃO ───────────────────────────────────────────────────────
+function Configuracao({db,url,sbKey,session,isMobile}){
+  const [aba,setAba]=useState('usuarios');
+  return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
+    <div style=${{display:'flex',borderBottom:`1px solid ${C.border}`,overflowX:'auto'}}>
+      ${[['usuarios','👤 Usuários']].map(([k,v])=>html`
+        <button key=${k} onClick=${()=>setAba(k)} style=${{background:'none',border:'none',cursor:'pointer',
+          padding:isMobile?'9px 14px':'10px 20px',fontSize:12,fontWeight:700,whiteSpace:'nowrap',
+          color:aba===k?C.gold:C.muted,borderBottom:aba===k?`2px solid ${C.gold}`:'2px solid transparent',flexShrink:0}}>${v}</button>`)}
+    </div>
+    ${aba==='usuarios'&&html`<${Usuarios} db=${db} url=${url} sbKey=${sbKey} session=${session} isMobile=${isMobile}/>`}
+  </div>`;
 }
 
-// ── UI ATOMS ──────────────────────────────────────────────────────────────────
-const Badge=({label,color})=>html`<span style=${{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:20,whiteSpace:'nowrap',background:color+'22',color,border:`1px solid ${color}44`}}>${label}</span>`;
-const Btn=({children,onClick,color=C.gold,small,full,disabled})=>html`<button onClick=${onClick} disabled=${disabled} style=${{background:color+'18',color,border:`1px solid ${color}44`,borderRadius:8,padding:small?'5px 12px':'10px 18px',fontWeight:700,cursor:disabled?'not-allowed':'pointer',fontSize:small?11:13,width:full?'100%':undefined,opacity:disabled?0.6:1}}>${children}</button>`;
-const inputSt={width:'100%',background:'#111812',border:'1px solid #243028',borderRadius:8,padding:'10px 12px',color:'#E8EFF0',fontSize:13,outline:'none',boxSizing:'border-box'};
-function Inp({label,...p}){
-  return html`<div style=${{marginBottom:13}}>
-    ${label&&html`<div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:.8,marginBottom:5}}>${label}</div>`}
-    <input ...${p} style=${inputSt}/>
-  </div>`;
-}
-function Slct({label,options,value,onChange}){
-  return html`<div style=${{marginBottom:13}}>
-    ${label&&html`<div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:.8,marginBottom:5}}>${label}</div>`}
-    <select value=${value} onChange=${onChange} style=${inputSt}>
-      ${options.map(o=>html`<option key=${typeof o==='string'?o:o.v} value=${typeof o==='string'?o:o.v}>${typeof o==='string'?o:o.l}</option>`)}
-    </select>
-  </div>`;
-}
-const Card=({children,style:sx})=>html`<div style=${{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`,...sx}}>${children}</div>`;
-const PBar=({value,color})=>html`<div style=${{background:C.border,borderRadius:99,height:6,overflow:'hidden',flex:1}}><div style=${{width:`${Math.min(100,value)}%`,height:'100%',background:color,borderRadius:99,transition:'width .4s'}}/></div>`;
-const SecTitle=({children})=>html`<h2 style=${{fontSize:15,fontWeight:800,color:C.text,margin:'0 0 12px',borderLeft:`3px solid ${C.gold}`,paddingLeft:10}}>${children}</h2>`;
-const Spin=()=>html`<div style=${{textAlign:'center',padding:40,color:C.muted,fontSize:13}}>Carregando...</div>`;
-const Empty=({msg='Nenhum registro encontrado'})=>html`<div style=${{textAlign:'center',padding:30,color:C.muted,fontSize:13}}>${msg}</div>`;
-const ErrBox=({msg})=>html`<div style=${{background:C.red+'11',border:`1px solid ${C.red}33`,borderRadius:8,padding:'10px 14px',color:C.red,fontSize:12,marginBottom:10}}>⚠ ${msg}</div>`;
-const OkBox=({msg})=>html`<div style=${{background:C.green+'11',border:`1px solid ${C.green}33`,borderRadius:8,padding:'10px 14px',color:C.green,fontSize:12,marginBottom:10}}>✓ ${msg}</div>`;
-function Modal({title,onClose,children}){
-  return html`<div style=${{position:'fixed',inset:0,zIndex:300,background:'rgba(0,0,0,.8)',display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
-    <div style=${{background:C.card,borderRadius:16,padding:22,width:'100%',maxWidth:460,maxHeight:'90vh',overflowY:'auto',border:`1px solid ${C.border}`}}>
-      <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}}>
-        <span style=${{fontSize:15,fontWeight:800,color:C.text}}>${title}</span>
-        <button onClick=${onClose} style=${{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:24,lineHeight:1}}>×</button>
+const MENU_G=[
+  {id:'dashboard', label:'Dashboard', icon:'📊'},
+  {id:'vendas',    label:'Vendas do Dia',icon:'💵'},
+  {id:'financeiro',label:'Financeiro',icon:'💰'},
+  {id:'pedidos',   label:'Pedidos',   icon:'📋'},
+  {id:'clientes',  label:'Clientes',  icon:'🏢'},
+  {id:'estoque',   label:'Catálogo',  icon:'🏷️'},
+  {id:'metas',     label:'Metas',     icon:'🎯'},
+  {id:'historico', label:'Histórico', icon:'📅'},
+  {id:'config',    label:'Configuração',icon:'⚙️'},
+];
+const MENU_A=[
+  {id:'vendas',    label:'Vendas do Dia',icon:'💵'},
+  {id:'pedidos',   label:'Pedidos',   icon:'📋'},
+  {id:'clientes',  label:'Clientes',  icon:'🏢'},
+  {id:'estoque',   label:'Catálogo',  icon:'🏷️'},
+  {id:'financeiro',label:'Financeiro',icon:'💰'},
+  {id:'metas',     label:'Metas',     icon:'🎯'},
+  {id:'historico', label:'Histórico', icon:'📅'},
+];
+
+// ── APP ───────────────────────────────────────────────────────────────────────
+function App(){
+  const isMobile=useIsMobile();
+  const [screen,setScreen]=useState('login');
+  const [cfg,setCfg]=useState({url:'https://kwwhmwmjdaodirsuhqvz.supabase.co',key:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt3d2htd21qZGFvZGlyc3VocXZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1NDE1NzEsImV4cCI6MjA5NDExNzU3MX0.o4n-r35CAjsq0jglm0cyPIvyUSIq-C3lR7YjEhg-iHQ'});
+  const [sess,setSess]=useState(null);
+  const [pag,setPag]=useState(null);
+  const [maisAberto,setMaisAberto]=useState(false);
+
+  const onLogin=s=>{setSess(s);const m=s.role==='gerencial'?MENU_G:MENU_A;setPag(m[0].id);setScreen('main');};
+  const logout=()=>{setSess(null);setScreen('login');};
+
+  if(screen==='login')  return html`<${LoginScreen} url=${cfg.url} sbKey=${cfg.key} onLogin=${onLogin}/>`;
+
+  const db=mkDB(cfg.url,cfg.key,sess.token);
+  const MENU=sess.role==='gerencial'?MENU_G:MENU_A;
+  const pr={db,isMobile};
+  // Mobile: mostra os 4 primeiros no bottom nav + botão "Mais" com o resto, se necessário
+  const precisaMais=MENU.length>5;
+  const MENU_MOB=precisaMais?MENU.slice(0,4):MENU;
+  const MENU_EXTRA=precisaMais?MENU.slice(4):[];
+
+  return html`<div style=${{fontFamily:"'Segoe UI',sans-serif",background:C.bg,minHeight:'100vh',color:C.text,display:'flex',flexDirection:isMobile?'column':'row'}}>
+    ${!isMobile&&html`<div style=${{width:220,minHeight:'100vh',background:C.surface,borderRight:`1px solid ${C.border}`,padding:'22px 0',display:'flex',flexDirection:'column',flexShrink:0,position:'sticky',top:0,height:'100vh'}}>
+      <div style=${{padding:'0 20px 20px',borderBottom:`1px solid ${C.border}`,marginBottom:14}}><${Logo}/></div>
+      <nav style=${{flex:1,padding:'0 12px'}}>
+        ${MENU.map(m=>html`<button key=${m.id} onClick=${()=>setPag(m.id)} style=${{width:'100%',display:'flex',alignItems:'center',gap:10,padding:'11px 13px',borderRadius:10,border:'none',
+          background:pag===m.id?C.gold+'18':'none',color:pag===m.id?C.gold:C.muted,cursor:'pointer',marginBottom:3,fontSize:13,fontWeight:600,textAlign:'left',
+          borderLeft:pag===m.id?`3px solid ${C.gold}`:'3px solid transparent'}}>
+          <span style=${{fontSize:15}}>${m.icon}</span>${m.label}
+        </button>`)}
+      </nav>
+      <div style=${{padding:'14px 20px',borderTop:`1px solid ${C.border}`}}>
+        <div style=${{fontSize:12,color:C.text,fontWeight:700,marginBottom:4}}>${sess.nome}</div>
+        <${Badge} label=${roleLabel(sess.role)} color=${sess.role==='gerencial'?C.gold:C.blue}/>
+        <br/><button onClick=${logout} style=${{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:11,marginTop:8,padding:0}}>Sair →</button>
       </div>
-      ${children}
+    </div>`}
+
+    <div style=${{flex:1,padding:isMobile?'14px 14px 90px':'26px 30px',overflowY:'auto',maxWidth:'100%'}}>
+      <div style=${{marginBottom:isMobile?14:22,display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+        <div>
+          ${isMobile&&html`<div style=${{marginBottom:4}}><${Logo} size="sm"/></div>`}
+          <h1 style=${{fontSize:isMobile?20:24,fontWeight:900,color:C.text,margin:0}}>${MENU.find(m=>m.id===pag)?.icon} ${MENU.find(m=>m.id===pag)?.label}</h1>
+          <div style=${{fontSize:10,color:C.muted,marginTop:2}}>${new Date().toLocaleDateString('pt-BR',{weekday:'short',day:'numeric',month:'short',year:'numeric'})}</div>
+        </div>
+        ${isMobile&&html`<button onClick=${logout} style=${{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:12}}>Sair</button>`}
+      </div>
+      ${pag==='dashboard'  &&html`<${Dashboard}  ...${pr}/>`}
+      ${pag==='vendas'     &&html`<${VendasDia}  ...${pr} session=${sess}/>`}
+      ${pag==='financeiro' &&html`<${Financeiro} ...${pr} role=${sess.role}/>`}
+      ${pag==='pedidos'    &&html`<${Pedidos}    ...${pr}/>`}
+      ${pag==='clientes'   &&html`<${Clientes}   ...${pr}/>`}
+      ${pag==='estoque'    &&html`<${Estoque}     ...${pr}/>`}
+      ${pag==='metas'      &&html`<${Metas}       ...${pr}/>`}
+      ${pag==='historico'  &&html`<${Historico}   ...${pr}/>`}
+      ${pag==='config'     &&html`<${Configuracao} ...${pr} url=${cfg.url} sbKey=${cfg.key} session=${sess}/>`}
     </div>
+
+    ${isMobile&&html`<nav style=${{position:'fixed',bottom:0,left:0,right:0,background:C.surface,borderTop:`1px solid ${C.border}`,display:'flex',zIndex:100,boxShadow:'0 -4px 20px #00000050'}}>
+      ${MENU_MOB.map(m=>html`<button key=${m.id} onClick=${()=>setPag(m.id)} style=${{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'10px 2px 8px',background:'none',border:'none',cursor:'pointer',borderTop:pag===m.id?`2px solid ${C.gold}`:'2px solid transparent'}}>
+        <span style=${{fontSize:19,lineHeight:1}}>${m.icon}</span>
+        <span style=${{fontSize:9,fontWeight:700,marginTop:3,color:pag===m.id?C.gold:C.muted,textTransform:'uppercase'}}>${m.label.length>7?m.label.slice(0,6)+'.':m.label}</span>
+      </button>`)}
+      ${precisaMais&&html`<button onClick=${()=>setMaisAberto(true)} style=${{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'10px 2px 8px',background:'none',border:'none',cursor:'pointer',borderTop:MENU_EXTRA.some(m=>m.id===pag)?`2px solid ${C.gold}`:'2px solid transparent'}}>
+        <span style=${{fontSize:19,lineHeight:1}}>⋯</span>
+        <span style=${{fontSize:9,fontWeight:700,marginTop:3,color:MENU_EXTRA.some(m=>m.id===pag)?C.gold:C.muted,textTransform:'uppercase'}}>Mais</span>
+      </button>`}
+    </nav>`}
+
+    ${maisAberto&&html`<${Modal} title="Mais Opções" onClose=${()=>setMaisAberto(false)}>
+      <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+        ${MENU_EXTRA.map(m=>html`<button key=${m.id} onClick=${()=>{setPag(m.id);setMaisAberto(false);}} style=${{
+          display:'flex',flexDirection:'column',alignItems:'center',gap:6,padding:'16px 10px',borderRadius:12,
+          background:pag===m.id?C.gold+'18':C.surface,border:`1px solid ${pag===m.id?C.gold+'44':C.border}`,cursor:'pointer'}}>
+          <span style=${{fontSize:24}}>${m.icon}</span>
+          <span style=${{fontSize:12,fontWeight:600,color:pag===m.id?C.gold:C.text}}>${m.label}</span>
+        </button>`)}
+      </div>
+    </${Modal}>`}
   </div>`;
-}
-function KpiCard({title,value,sub,icon,color,trend}){
-  return html`<div style=${{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`,position:'relative',overflow:'hidden'}}>
-    <div style=${{position:'absolute',right:-6,top:-6,fontSize:44,opacity:.07}}>${icon}</div>
-    <div style=${{fontSize:9,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:.8}}>${title}</div>
-    <div style=${{fontSize:19,fontWeight:800,color,marginTop:4,lineHeight:1.2}}>${value}</div>
-    <div style=${{fontSize:10,marginTop:3,display:'flex',gap:4,flexWrap:'wrap'}}>
-      ${trend!==undefined&&html`<span style=${{color:trend>=0?C.green:C.red,fontWeight:700}}>${trend>=0?'▲':'▼'} ${Math.abs(trend)}%</span>`}
-      <span style=${{color:C.muted}}>${sub}</span>
-    </div>
-  </div>`;
-}
-function KpiGrid({children,isMobile}){
-  return html`<div style=${{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(auto-fit,minmax(155px,1fr))',gap:10}}>${children}</div>`;
 }
 
-// Card de Meta do Mês
-function MetaCard({metaMes,receitaMes,isMobile}){
-  const pct=metaMes>0?Math.round((receitaMes/metaMes)*100):0;
-  const falta=Math.max(0,metaMes-receitaMes);
-  const cor=pct>=100?C.green:pct>=70?C.gold:pct>=40?C.blue:C.red;
-  return html`<div style=${{background:C.card,borderRadius:12,padding:16,border:`2px solid ${cor}44`,gridColumn:isMobile?'span 2':'span 2',boxShadow:`0 0 20px ${cor}18`}}>
-    <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
-      <div>
-        <div style=${{fontSize:9,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:.8}}>🎯 Meta de Vendas — ${MESES[MES_ATUAL-1]}</div>
-        <div style=${{fontSize:22,fontWeight:900,color:cor,marginTop:4}}>${fmt(metaMes)}</div>
-        ${metaMes===0&&html`<div style=${{fontSize:11,color:C.muted,marginTop:2}}>Cadastre a meta em <strong style=${{color:C.gold}}>Metas</strong></div>`}
-      </div>
-      <div style=${{textAlign:'right'}}>
-        <div style=${{fontSize:28,fontWeight:900,color:cor}}>${pct}%</div>
-        <div style=${{fontSize:10,color:C.muted}}>atingido</div>
-      </div>
-    </div>
-    ${metaMes>0&&html`<div>
-      <div style=${{display:'flex',justifyContent:'space-between',marginBottom:6}}>
-        <span style=${{fontSize:11,color:C.green}}>✓ Recebido: <strong>${fmt(receitaMes)}</strong></span>
-        <span style=${{fontSize:11,color:falta>0?C.red:C.green}}>${falta>0?`Falta: ${fmt(falta)}`:'✅ Meta atingida!'}</span>
-      </div>
-      <${PBar} value=${pct} color=${cor}/>
+ReactDOM.createRoot(document.getElementById('root')).render(html`<${App}/>`);
+</script>
+</body>
+</html>
