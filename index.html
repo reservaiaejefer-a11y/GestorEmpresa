@@ -24,7 +24,7 @@ const { useState, useEffect, useCallback } = React;
 const html = htm.bind(React.createElement);
 
 const C={bg:'#0A0F0D',surface:'#111812',card:'#172019',border:'#243028',
-  gold:'#3ECBA0',green:'#3ECF8E',red:'#F56565',blue:'#4A9EFF',purple:'#9B7FEA',text:'#E8EFF0',muted:'#7A9490'};
+  gold:'#3ECBA0',green:'#3ECF8E',red:'#F56565',blue:'#4A9EFF',purple:'#9B7FEA',meta:'#F2C94C',text:'#E8EFF0',muted:'#7A9490'};
 
 // ── SUPABASE ──────────────────────────────────────────────────────────────────
 function mkDB(url,key,token){
@@ -68,6 +68,37 @@ const roleLabel=r=>r==='gerencial'?'Administrador':'Vendedor';
 const MESES=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 const now=new Date(); const ANO_ATUAL=now.getFullYear(); const MES_ATUAL=now.getMonth()+1;
 const mesStr=m=>String(m).padStart(2,'0');
+// Datas sempre no fuso do navegador (toISOString usa UTC e vira o dia às 21h no Brasil)
+const isoLocal=d=>`${d.getFullYear()}-${mesStr(d.getMonth()+1)}-${mesStr(d.getDate())}`;
+const hojeISO=()=>isoLocal(new Date());
+const dataDe=ts=>ts?isoLocal(new Date(ts)):'';
+const fmtData=iso=>iso?new Date(iso+'T12:00').toLocaleDateString('pt-BR'):'—';
+const normNome=s=>(s||'').trim().replace(/\s+/g,' ').toUpperCase();
+const STATUS=['Orçamento','Aprovação','Arte','Produção','Entrega','Concluído'];
+const PROG={Orçamento:0,Aprovação:15,Arte:30,Produção:50,Entrega:85,Concluído:100};
+const COR_ST={Orçamento:C.muted,Aprovação:C.purple,Arte:C.gold,Produção:C.blue,Entrega:C.green,Concluído:C.green};
+const proxStatus=s=>STATUS[STATUS.indexOf(s)+1]||null;
+const CAT_RECEITA=['Venda','Recebimento','Venda do Dia','Outras Receitas'];
+const CAT_DESPESA=['Despesa Fixa','Fornecedor','Combustível','Salários','Impostos','Marketing','Outras Despesas'];
+// Sequência a partir do último pedido criado (há números avulsos fora de ordem, ex.: PED-239), pulando os já usados
+const numPed=c=>{const m=(c||'').trim().match(/^PED[-\s](\d+)$/i);return m?+m[1]:null;};
+const proximoCodigo=pedidos=>{
+  const usados=new Set(pedidos.map(p=>numPed(p.codigo)).filter(n=>n!==null));
+  const ultimo=[...pedidos].sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map(p=>numPed(p.codigo)).find(n=>n!==null)||0;
+  let n=ultimo+1; while(usados.has(n)) n++;
+  return `PED-${n}`;
+};
+// Gera o A Receber do pedido quando entra em Produção — só se ainda não existir um para o mesmo código
+async function garantirAReceber(db,p){
+  const prefixo=`${p.codigo} — `;
+  const existentes=await db.get('contas_receber',`cliente_nome=like.${encodeURIComponent(prefixo)}*`);
+  if(existentes.length) return;
+  await db.post('contas_receber',{cliente_nome:prefixo+p.cliente_nome,vencimento:p.prazo||isoLocal(new Date(Date.now()+30*86400000)),valor:+p.valor_total,status:'A vencer'});
+}
+async function mudarStatus(db,p,novo){
+  await db.patch('pedidos',p.id,{status:novo,progresso:PROG[novo]});
+  if(novo==='Produção'&&STATUS.indexOf(p.status)<STATUS.indexOf('Produção')) await garantirAReceber(db,{...p,status:novo});
+}
 function useIsMobile(){
   const [m,setM]=useState(()=>window.innerWidth<768);
   useEffect(()=>{const fn=()=>setM(window.innerWidth<768);window.addEventListener('resize',fn);return()=>window.removeEventListener('resize',fn);},[]);
@@ -267,31 +298,21 @@ function FormProduto({db,item,onDone}){
   </div>`;
 }
 
-function FormPedido({db,item,onDone}){
-  const cod=`PED-${ANO_ATUAL}-${String(Date.now()).slice(-4)}`;
-  const [f,setF]=useState({codigo:cod,cliente_nome:'',valor_total:0,custo_total:0,quantidade_itens:0,prazo:'',status:'Orçamento',progresso:0,observacoes:'',...item});
+function FormPedido({db,item,onDone,codigoNovo,clientes=[],vendedores=[],session}){
+  const [f,setF]=useState({codigo:codigoNovo,cliente_nome:'',vendedor_nome:session?.nome||'',valor_total:0,custo_total:0,quantidade_itens:0,prazo:'',status:'Orçamento',observacoes:'',...item});
   const [loading,setLoading]=useState(false);const [err,setErr]=useState('');
   const set=k=>e=>setF(p=>({...p,[k]:e.target.value}));
-  const sts=['Orçamento','Aprovação','Arte','Produção','Entrega','Concluído'];
   const vt=+f.valor_total||0; const ct=+f.custo_total||0;
   const margemRS=vt-ct; const margemPct=vt>0?Math.round((margemRS/vt)*100):0;
+  const geraReceber=f.status==='Produção'&&(!item||STATUS.indexOf(item.status)<STATUS.indexOf('Produção'));
   const save=async()=>{
-    if(!f.cliente_nome) return setErr('Nome do cliente obrigatório.');
+    if(!f.cliente_nome.trim()) return setErr('Nome do cliente obrigatório.');
     setLoading(true);setErr('');
     try{
-      const d={...f,valor_total:+f.valor_total,custo_total:+f.custo_total,quantidade_itens:+f.quantidade_itens,progresso:+f.progresso};
-      const statusAnterior=item?.status||'';
+      const d={...f,cliente_nome:f.cliente_nome.trim(),vendedor_nome:(f.vendedor_nome||'').trim()||null,valor_total:+f.valor_total,custo_total:+f.custo_total,quantidade_itens:+f.quantidade_itens,progresso:PROG[f.status]};
+      if(item?.status_anterior&&d.status!==item.status) d.status_anterior=null;
       if(item?.id) await db.patch('pedidos',item.id,d); else await db.post('pedidos',d);
-      // ── AUTO: cria A Receber quando entra em Produção ──────────────────────
-      if(d.status==='Produção' && statusAnterior!=='Produção'){
-        const venc=d.prazo||new Date(Date.now()+30*24*60*60*1000).toISOString().slice(0,10);
-        await db.post('contas_receber',{
-          cliente_nome:`${d.codigo} — ${d.cliente_nome}`,
-          vencimento:venc,
-          valor:d.valor_total,
-          status:'A vencer'
-        });
-      }
+      if(geraReceber) await garantirAReceber(db,d);
       onDone(true);
     }catch(e){setErr(e.message);}finally{setLoading(false);}
   };
@@ -300,7 +321,10 @@ function FormPedido({db,item,onDone}){
       <${Inp} label="Código" value=${f.codigo} onInput=${set('codigo')}/>
       <${Inp} label="Prazo" type="date" value=${f.prazo} onInput=${set('prazo')}/>
     </div>
-    <${Inp} label="Nome do Cliente" value=${f.cliente_nome} onInput=${set('cliente_nome')}/>
+    <${Inp} label="Nome do Cliente" list="lista-clientes" autocomplete="off" value=${f.cliente_nome} onInput=${set('cliente_nome')} placeholder="Comece a digitar para ver sugestões"/>
+    <datalist id="lista-clientes">${clientes.map(n=>html`<option key=${n} value=${n}/>`)}</datalist>
+    <${Inp} label="Vendedor" list="lista-vendedores" autocomplete="off" value=${f.vendedor_nome||''} onInput=${set('vendedor_nome')}/>
+    <datalist id="lista-vendedores">${vendedores.map(n=>html`<option key=${n} value=${n}/>`)}</datalist>
     <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
       <${Inp} label="Valor de Venda (R$)" type="number" step="0.01" value=${f.valor_total} onInput=${set('valor_total')}/>
       <${Inp} label="Custo Total (R$)" type="number" step="0.01" value=${f.custo_total} onInput=${set('custo_total')}/>
@@ -310,10 +334,9 @@ function FormPedido({db,item,onDone}){
       <span style=${{fontSize:11,color:C.muted}}>Margem estimada</span>
       <span style=${{fontSize:14,fontWeight:800,color:margemRS>=0?C.green:C.red}}>${fmt(margemRS)} (${margemPct}%)</span>
     </div>`}
-    <${Slct} label="Status" options=${sts} value=${f.status} onChange=${set('status')}/>
-    <${Inp} label=${'Progresso: '+f.progresso+'%'} type="range" min="0" max="100" value=${f.progresso} onInput=${set('progresso')}/>
-    <${Inp} label="Observações" value=${f.observacoes} onInput=${set('observacoes')}/>
-    ${f.status==='Produção'&&(!item||item.status!=='Produção')&&html`<div style=${{background:C.green+'11',border:`1px solid ${C.green}33`,borderRadius:8,padding:'8px 12px',fontSize:11,color:C.green,marginBottom:10}}>
+    <${Slct} label="Status" options=${STATUS} value=${f.status} onChange=${set('status')}/>
+    <${Inp} label="Observações" value=${f.observacoes||''} onInput=${set('observacoes')}/>
+    ${geraReceber&&html`<div style=${{background:C.green+'11',border:`1px solid ${C.green}33`,borderRadius:8,padding:'8px 12px',fontSize:11,color:C.green,marginBottom:10}}>
       ✓ Ao salvar, será gerado automaticamente um lançamento em <strong>A Receber</strong>
     </div>`}
     ${err&&html`<${ErrBox} msg=${err}/>`}
@@ -321,16 +344,27 @@ function FormPedido({db,item,onDone}){
   </div>`;
 }
 
+function CategoriaSelect({tipo,value,onChange}){
+  const base=tipo==='despesa'?CAT_DESPESA:CAT_RECEITA;
+  const opts=value&&!base.includes(value)?[value,...base]:base;
+  return html`<${Slct} label="Categoria" options=${opts} value=${value} onChange=${onChange}/>`;
+}
+const TIPOS_LANC=[{v:'receita',l:'💚 Receita'},{v:'despesa',l:'🔴 Despesa'}];
+const setLancCampo=setF=>k=>e=>{
+  const v=e.target.value;
+  setF(p=>k==='tipo'?{...p,tipo:v,categoria:v==='despesa'?CAT_DESPESA[0]:CAT_RECEITA[0]}:{...p,[k]:v});
+};
+
 function FormLancEdit({db,item,onDone}){
   const [f,setF]=useState({
     tipo:item?.tipo||'receita',
     descricao:item?.descricao||'',
     valor:item?.valor||0,
-    data:item?.data||new Date().toISOString().slice(0,10),
-    categoria:item?.categoria||'Geral'
+    data:item?.data||hojeISO(),
+    categoria:item?.categoria||CAT_RECEITA[0]
   });
   const [loading,setLoading]=useState(false);const [err,setErr]=useState('');
-  const set=k=>e=>setF(p=>({...p,[k]:e.target.value}));
+  const set=setLancCampo(setF);
   const save=async()=>{
     if(!f.descricao) return setErr('Descrição obrigatória.');
     if(!f.data) return setErr('Data obrigatória.');
@@ -341,13 +375,13 @@ function FormLancEdit({db,item,onDone}){
     }catch(e){setErr(e.message);}finally{setLoading(false);}
   };
   return html`<div>
-    <${Slct} label="Tipo" options=${[{v:'receita',l:'💚 Receita'},{v:'despesa',l:'🔴 Despesa'}]} value=${f.tipo} onChange=${set('tipo')}/>
+    <${Slct} label="Tipo" options=${TIPOS_LANC} value=${f.tipo} onChange=${set('tipo')}/>
     <${Inp} label="Descrição" value=${f.descricao} onInput=${set('descricao')}/>
     <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
       <${Inp} label="Valor (R$)" type="number" step="0.01" value=${f.valor} onInput=${set('valor')}/>
       <${Inp} label="Data" type="date" value=${f.data} onInput=${set('data')}/>
     </div>
-    <${Inp} label="Categoria" value=${f.categoria} onInput=${set('categoria')}/>
+    <${CategoriaSelect} tipo=${f.tipo} value=${f.categoria} onChange=${set('categoria')}/>
     <div style=${{background:C.gold+'11',border:`1px solid ${C.gold}33`,borderRadius:8,padding:'8px 12px',fontSize:11,color:C.gold,marginBottom:10}}>
       ✏️ Editando lançamento existente — sem novas entradas em A Receber
     </div>
@@ -398,7 +432,7 @@ function FormConta({db,tipo,item,onDone}){
           tipo:'receita',
           descricao:d.cliente_nome||'Recebimento',
           valor:d.valor,
-          data:new Date().toISOString().slice(0,10),
+          data:hojeISO(),
           categoria:'Recebimento'
         });
       }
@@ -419,9 +453,9 @@ function FormConta({db,tipo,item,onDone}){
 }
 
 function FormLanc({db,onDone}){
-  const [f,setF]=useState({tipo:'receita',descricao:'',valor:0,data:new Date().toISOString().slice(0,10),categoria:'Venda'});
+  const [f,setF]=useState({tipo:'receita',descricao:'',valor:0,data:hojeISO(),categoria:CAT_RECEITA[0]});
   const [loading,setLoading]=useState(false);const [err,setErr]=useState('');
-  const set=k=>e=>setF(p=>({...p,[k]:e.target.value}));
+  const set=setLancCampo(setF);
   const save=async()=>{
     if(!f.descricao) return setErr('Descrição obrigatória.');
     setLoading(true);setErr('');
@@ -440,13 +474,13 @@ function FormLanc({db,onDone}){
     }catch(e){setErr(e.message);}finally{setLoading(false);}
   };
   return html`<div>
-    <${Slct} label="Tipo" options=${[{v:'receita',l:'💚 Receita'},{v:'despesa',l:'🔴 Despesa'}]} value=${f.tipo} onChange=${set('tipo')}/>
+    <${Slct} label="Tipo" options=${TIPOS_LANC} value=${f.tipo} onChange=${set('tipo')}/>
     <${Inp} label="Descrição" value=${f.descricao} onInput=${set('descricao')}/>
     <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
       <${Inp} label="Valor (R$)" type="number" step="0.01" value=${f.valor} onInput=${set('valor')}/>
       <${Inp} label="Data" type="date" value=${f.data} onInput=${set('data')}/>
     </div>
-    <${Inp} label="Categoria" value=${f.categoria} onInput=${set('categoria')}/>
+    <${CategoriaSelect} tipo=${f.tipo} value=${f.categoria} onChange=${set('categoria')}/>
     ${f.tipo==='receita'&&html`<div style=${{background:C.green+'11',border:`1px solid ${C.green}33`,borderRadius:8,padding:'8px 12px',fontSize:11,color:C.green,marginBottom:10}}>
       ✓ Receita será registrada como <strong>Recebido</strong> em Contas a Receber
     </div>`}
@@ -456,26 +490,28 @@ function FormLanc({db,onDone}){
 }
 
 // ── SEÇÃO: DASHBOARD ──────────────────────────────────────────────────────────
+// Vendas por vendedor = pedidos (pela data de criação) + registros da aba Vendas do Dia
+const registrosVenda=(pedidos,vendas)=>[
+  ...pedidos.map(p=>({vendedor:p.vendedor_nome,valor:+p.valor_total||0,data:dataDe(p.created_at)})),
+  ...vendas.map(v=>({vendedor:v.vendedor_nome,valor:+v.valor_total||0,data:v.data}))
+];
+const MES_ISO=`${ANO_ATUAL}-${mesStr(MES_ATUAL)}`;
+
 // ── CARD: ACOMPANHAMENTO DE VENDEDORES ────────────────────────────────────────
-function VendedoresCards({hojeLista,mesLista,isMobile}){
+function VendedoresCards({registros,isMobile}){
+  const hoje=hojeISO();
   const map={};
-  mesLista.forEach(v=>{
-    const n=v.vendedor_nome||'Sem identificação';
-    if(!map[n]) map[n]={nome:n,hoje:0,mes:0,qtdHoje:0,qtdMes:0};
-    map[n].mes+= +v.valor_total;
-    map[n].qtdMes++;
+  registros.filter(r=>r.data.slice(0,7)===MES_ISO).forEach(r=>{
+    const n=r.vendedor||'Sem vendedor';
+    const m=map[n]||(map[n]={nome:n,hoje:0,mes:0,qtdHoje:0,qtdMes:0});
+    m.mes+=r.valor; m.qtdMes++;
+    if(r.data===hoje){m.hoje+=r.valor;m.qtdHoje++;}
   });
-  hojeLista.forEach(v=>{
-    const n=v.vendedor_nome||'Sem identificação';
-    if(!map[n]) map[n]={nome:n,hoje:0,mes:0,qtdHoje:0,qtdMes:0};
-    map[n].hoje+= +v.valor_total;
-    map[n].qtdHoje++;
-  });
-  const lista=Object.values(map).sort((a,b)=>a.nome.localeCompare(b.nome));
-  if(!lista.length) return html`<${Empty} msg="Nenhuma venda registrada no mês"/>`;
+  const lista=Object.values(map).sort((a,b)=>(a.nome==='Sem vendedor')-(b.nome==='Sem vendedor')||a.nome.localeCompare(b.nome));
   return html`<div>
     <${SecTitle}>👤 Vendedores — ${MESES[MES_ATUAL-1]}</${SecTitle}>
-    <div style=${{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(auto-fill,minmax(220px,1fr))',gap:10}}>
+    ${!lista.length?html`<${Empty} msg="Nenhuma venda neste mês ainda. Informe o vendedor ao criar o pedido para ele aparecer aqui."/>`:
+    html`<div style=${{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(auto-fill,minmax(220px,1fr))',gap:10}}>
       ${lista.map(v=>html`<div key=${v.nome} style=${{background:C.surface,borderRadius:12,padding:14,border:`1px solid ${C.border}`,borderTop:`3px solid ${v.hoje>0?C.green:C.border}`}}>
         <div style=${{fontSize:12,color:C.text,fontWeight:800,marginBottom:12,display:'flex',alignItems:'center',gap:7}}>
           <span style=${{fontSize:16}}>👤</span>
@@ -490,176 +526,135 @@ function VendedoresCards({hojeLista,mesLista,isMobile}){
           <div style=${{background:C.card,borderRadius:8,padding:'10px 12px'}}>
             <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase',letterSpacing:.7,fontWeight:700,marginBottom:4}}>Acumulado ${MESES[MES_ATUAL-1].slice(0,3)}</div>
             <div style=${{fontSize:18,color:C.gold,fontWeight:900,lineHeight:1}}>${fmt(v.mes)}</div>
-            ${v.qtdMes>0&&html`<div style=${{fontSize:10,color:C.muted,marginTop:3}}>${v.qtdMes} ${v.qtdMes===1?'venda':'vendas'} no mês</div>`}
+            <div style=${{fontSize:10,color:C.muted,marginTop:3}}>${v.qtdMes} ${v.qtdMes===1?'venda':'vendas'} no mês</div>
           </div>
         </div>
       </div>`)}
-    </div>
+    </div>`}
   </div>`;
 }
 
-// ── GRÁFICO: GAUGE META ───────────────────────────────────────────────────────
-function GaugeMeta({valor,meta}){
-  const ratio=meta>0?valor/meta:0;
-  const pctVis=Math.min(1,ratio);
-  const r=54; const cx=70; const cy=70;
-  const circ=2*Math.PI*r;
-  const dash=circ*pctVis;
-  const cor=ratio>=1?C.green:ratio>=0.7?C.gold:ratio>=0.4?C.blue:C.red;
-  const dashArr=dash+' '+circ;
-  const rotateT='rotate(-90 '+cx+' '+cy+')';
-  const pctTexto=Math.round(ratio*100);
-  const fontSize=pctTexto>=1000?14:pctTexto>=100?18:22;
-  return html`<div>
-    <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:8}}>🎯 Meta vs Realizado</div>
-    <div style=${{display:'flex',alignItems:'center',gap:16}}>
-      <svg viewBox="0 0 140 140" style=${{width:130,height:130,flexShrink:0}}>
-        <circle cx=${cx} cy=${cy} r=${r} fill="none" stroke=${C.border} stroke-width="14"/>
-        <circle cx=${cx} cy=${cy} r=${r} fill="none" stroke=${cor} stroke-width="14"
-          stroke-dasharray=${dashArr} stroke-linecap="round"
-          transform=${rotateT} style=${{transition:'stroke-dasharray .6s ease'}}/>
-        <text x=${cx} y=${cy-8} text-anchor="middle" fill=${cor} font-size=${fontSize} font-weight="900">${pctTexto+'%'}</text>
-        <text x=${cx} y=${cy+12} text-anchor="middle" fill=${C.muted} font-size="9">atingido</text>
-        <text x=${cx} y=${cy+26} text-anchor="middle" fill=${C.text} font-size="8">${meta>0?fmt(meta):'Sem meta'}</text>
-      </svg>
-      <div style=${{flex:1}}>
-        <div style=${{marginBottom:10}}>
-          <div style=${{fontSize:10,color:C.muted,marginBottom:2}}>Recebido</div>
-          <div style=${{fontSize:16,fontWeight:800,color:C.green}}>${fmt(valor)}</div>
-        </div>
-        <div style=${{marginBottom:10}}>
-          <div style=${{fontSize:10,color:C.muted,marginBottom:2}}>Meta</div>
-          <div style=${{fontSize:16,fontWeight:800,color:cor}}>${meta>0?fmt(meta):'—'}</div>
-        </div>
-        <div>
-          <div style=${{fontSize:10,color:C.muted,marginBottom:2}}>Falta</div>
-          <div style=${{fontSize:16,fontWeight:800,color:Math.max(0,meta-valor)>0?C.red:C.green}}>${meta>0?fmt(Math.max(0,meta-valor)):'—'}</div>
-        </div>
-      </div>
-    </div>
-  </div>`;
-}
-
-// ── GRÁFICO: BARRAS RECEITA × DESPESA ────────────────────────────────────────
-function BarRecDesp({dados,height=160}){
-  if(!dados||!dados.length) return html`<${Empty} msg="Sem lançamentos no período"/>`;
-  const maxVal=Math.max(...dados.flatMap(d=>[d.receita,d.despesa]),1);
+// ── GRÁFICO: BARRAS (receita × despesa, com linha de meta opcional) ──────────
+// Os rótulos ficam fora do SVG: com preserveAspectRatio="none" o texto sairia esticado
+function GraficoBarras({dados,height=160,destaque}){
   const n=dados.length;
-  const gw=100/n;
-  const bw=gw*0.32;
-  const areaH=height-22;
+  const maxVal=Math.max(...dados.flatMap(d=>[d.receita,d.despesa,d.meta||0]),1);
+  const gw=100/n; const bw=gw*0.32;
+  const legenda=(cor,txt)=>html`<span style=${{fontSize:10,color:cor,display:'flex',alignItems:'center',gap:4}}><span style=${{width:10,height:10,background:cor,borderRadius:2,display:'inline-block'}}/> ${txt}</span>`;
   return html`<div>
-    <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:8}}>📊 Receitas × Despesas — últimos meses</div>
-    <div style=${{display:'flex',gap:12,marginBottom:8}}>
-      <span style=${{fontSize:10,color:C.green,display:'flex',alignItems:'center',gap:4}}><span style=${{width:10,height:10,background:C.green,borderRadius:2,display:'inline-block'}}/> Receita</span>
-      <span style=${{fontSize:10,color:C.red,display:'flex',alignItems:'center',gap:4}}><span style=${{width:10,height:10,background:C.red,borderRadius:2,display:'inline-block'}}/> Despesa</span>
+    <div style=${{display:'flex',gap:12,marginBottom:8,flexWrap:'wrap'}}>
+      ${legenda(C.green,'Receita (recebido)')}${legenda(C.red,'Despesa')}
+      ${dados.some(d=>d.meta)&&legenda(C.meta,'Meta (tracejado)')}
     </div>
     <svg viewBox="0 0 100 ${height}" preserveAspectRatio="none" style=${{width:'100%',height:height+'px',display:'block'}}>
       ${dados.map((d,i)=>{
-        const recH=(d.receita/maxVal)*areaH;
-        const despH=(d.despesa/maxVal)*areaH;
+        const recH=(d.receita/maxVal)*height; const despH=(d.despesa/maxVal)*height; const metaH=((d.meta||0)/maxVal)*height;
         const gx=i*gw;
         return html`<g key=${i}>
-          <rect x=${gx+gw*0.06} y=${areaH-recH} width=${bw} height=${recH} fill=${C.green} rx="1.5"/>
-          <rect x=${gx+gw*0.06+bw+gw*0.04} y=${areaH-despH} width=${bw} height=${despH} fill=${C.red} rx="1.5"/>
-          <text x=${gx+gw/2} y=${height-5} text-anchor="middle" fill=${C.muted} font-size="5">${d.mes}</text>
+          ${destaque===i&&html`<rect x=${gx} y="0" width=${gw} height=${height} fill="#3ECBA011"/>`}
+          <rect x=${gx+gw*0.15} y=${height-recH} width=${bw} height=${recH} fill=${C.green} rx="1"><title>${d.mes}: receita ${fmt(d.receita)}</title></rect>
+          <rect x=${gx+gw*0.15+bw+gw*0.04} y=${height-despH} width=${bw} height=${despH} fill=${C.red} rx="1"><title>${d.mes}: despesa ${fmt(d.despesa)}</title></rect>
+          ${d.meta>0&&html`<line x1=${gx+gw*0.08} y1=${height-metaH} x2=${gx+gw*0.92} y2=${height-metaH} stroke=${C.meta} stroke-width="1" stroke-dasharray="2,1.5" vector-effect="non-scaling-stroke"/>`}
         </g>`;
       })}
     </svg>
+    <div style=${{display:'grid',gridTemplateColumns:`repeat(${n},1fr)`,marginTop:5}}>
+      ${dados.map((d,i)=>html`<div key=${i} style=${{textAlign:'center',fontSize:10,color:destaque===i?C.gold:C.muted,fontWeight:destaque===i?800:500}}>${d.mes}</div>`)}
+    </div>
   </div>`;
 }
 
 function Dashboard({db,isMobile}){
-  const [data,setData]=useState({pedidos:[],lancMes:[],despMes:[],receber:[],meta:0,chartData:[],vendasHoje:0,vendasHojeLista:[],vendasMesLista:[]});
+  const [data,setData]=useState({pedidos:[],lancMes:[],despMes:[],receber:[],meta:0,chartData:[],vendasMes:[]});
   const [loading,setLoading]=useState(true);
+  const [verTodosPrazos,setVerTodosPrazos]=useState(false);
   useEffect(()=>{
     (async()=>{
       setLoading(true);
       try{
+        const ini=`${MES_ISO}-01`;
         const proxMes=MES_ATUAL===12?`${ANO_ATUAL+1}-01-01`:`${ANO_ATUAL}-${mesStr(MES_ATUAL+1)}-01`;
-        const d6=new Date(ANO_ATUAL,MES_ATUAL-7,1);
-        const d6str=`${d6.getFullYear()}-${mesStr(d6.getMonth()+1)}-01`;
-        const hojeStr=new Date().toISOString().slice(0,10);
-        const [pedidos,lancMes,despMes,receber,metas,lanc6m,vendasHj,vendasMes]=await Promise.all([
+        const d6=new Date(ANO_ATUAL,MES_ATUAL-6,1);
+        const d6str=isoLocal(d6);
+        const [pedidos,lancMes,despMes,receber,metas,lanc6m,vendasMes]=await Promise.all([
           db.get('pedidos'),
-          db.get('lancamentos',`tipo=eq.receita&data=gte.${ANO_ATUAL}-${mesStr(MES_ATUAL)}-01&data=lt.${proxMes}`),
-          db.get('lancamentos',`tipo=eq.despesa&data=gte.${ANO_ATUAL}-${mesStr(MES_ATUAL)}-01&data=lt.${proxMes}`),
+          db.get('lancamentos',`tipo=eq.receita&data=gte.${ini}&data=lt.${proxMes}`),
+          db.get('lancamentos',`tipo=eq.despesa&data=gte.${ini}&data=lt.${proxMes}`),
           db.get('contas_receber'),
           db.get('metas',`ano=eq.${ANO_ATUAL}&mes=eq.${MES_ATUAL}`),
-          db.get('lancamentos',`data=gte.${d6str}&order=data.asc`),
-          db.get('vendas',`data=eq.${hojeStr}`),
-          db.get('vendas',`data=gte.${ANO_ATUAL}-${mesStr(MES_ATUAL)}-01&data=lt.${proxMes}`)
+          db.get('lancamentos',`data=gte.${d6str}&data=lt.${proxMes}`),
+          db.get('vendas',`data=gte.${ini}&data=lt.${proxMes}`)
         ]);
-        const vendasHoje=vendasHj.reduce((s,v)=>s+ +v.valor_total,0);
         const porMes={};
-        lanc6m.forEach(l=>{
-          const m=l.data?.slice(0,7)||'';if(!m)return;
-          if(!porMes[m])porMes[m]={mes:MESES[parseInt(m.slice(5))-1].slice(0,3),receita:0,despesa:0};
-          porMes[m][l.tipo]+= +l.valor;
-        });
-        const chartData=Object.entries(porMes).sort(([a],[b])=>a.localeCompare(b)).slice(-6).map(([,v])=>v);
-        setData({pedidos,lancMes,despMes,receber,meta:metas?.[0]?.valor||0,chartData,vendasHoje,vendasHojeLista:vendasHj,vendasMesLista:vendasMes});
+        for(let i=0;i<6;i++){
+          const d=new Date(ANO_ATUAL,MES_ATUAL-6+i,1);
+          porMes[isoLocal(d).slice(0,7)]={mes:MESES[d.getMonth()].slice(0,3),receita:0,despesa:0};
+        }
+        lanc6m.forEach(l=>{const m=porMes[l.data?.slice(0,7)];if(m) m[l.tipo]+= +l.valor;});
+        setData({pedidos,lancMes,despMes,receber,meta:metas?.[0]?.valor||0,chartData:Object.values(porMes),vendasMes});
       }catch{}finally{setLoading(false);}
     })();
   },[]);
   if(loading) return html`<${Spin}/>`;
+  const hoje=hojeISO();
+  const registros=registrosVenda(data.pedidos,data.vendasMes);
+  const doMes=registros.filter(r=>r.data.slice(0,7)===MES_ISO);
+  const vendidoMes=doMes.reduce((s,r)=>s+r.valor,0);
+  const vendidoHoje=doMes.filter(r=>r.data===hoje).reduce((s,r)=>s+r.valor,0);
   const tRec=data.receber.filter(c=>c.status!=='Pago').reduce((s,c)=>s+ +c.valor,0);
   const ativos=data.pedidos.filter(p=>p.status!=='Concluído');
   const recMes=data.lancMes.reduce((s,l)=>s+ +l.valor,0);
   const despMes=data.despMes.reduce((s,l)=>s+ +l.valor,0);
   const resultado=recMes-despMes;
-  const cP={Orçamento:C.muted,Aprovação:C.purple,Arte:C.gold,Produção:C.blue,Entrega:C.green,Concluído:C.green};
-  // Margem média da carteira (pedidos com custo cadastrado)
   const comCusto=data.pedidos.filter(p=>+p.custo_total>0&&+p.valor_total>0);
   const margemMedia=comCusto.length>0?Math.round(comCusto.reduce((s,p)=>s+((p.valor_total-p.custo_total)/p.valor_total*100),0)/comCusto.length):null;
-  // Alertas de prazo — pedidos ativos vencendo em até 3 dias ou atrasados
-  const hoje=new Date(); hoje.setHours(0,0,0,0);
-  const prazosAlerta=ativos.filter(p=>p.prazo).map(p=>{
-    const pz=new Date(p.prazo+'T00:00:00');
-    const dias=Math.round((pz-hoje)/86400000);
-    return {...p,dias};
-  }).filter(p=>p.dias<=3).sort((a,b)=>a.dias-b.dias);
+  // Alertas de prazo — pedidos em andamento vencendo em até 3 dias ou atrasados
+  const hojeD=new Date(hoje+'T00:00:00');
+  const prazosAlerta=ativos.filter(p=>p.prazo).map(p=>({...p,dias:Math.round((new Date(p.prazo+'T00:00:00')-hojeD)/86400000)}))
+    .filter(p=>p.dias<=3).sort((a,b)=>a.dias-b.dias);
+  const prazosVisiveis=verTodosPrazos?prazosAlerta:prazosAlerta.slice(0,5);
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
     <${Card}>
-      <${VendedoresCards} hojeLista=${data.vendasHojeLista} mesLista=${data.vendasMesLista} isMobile=${isMobile}/>
+      <${VendedoresCards} registros=${registros} isMobile=${isMobile}/>
     </${Card}>
     <div style=${{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(auto-fit,minmax(155px,1fr))',gap:10}}>
       <${MetaCard} metaMes=${data.meta} receitaMes=${recMes} isMobile=${isMobile}/>
-      <${KpiCard} title="Vendas de Hoje" value=${fmt(data.vendasHoje)} sub="acumula na receita" icon="💵" color=${C.green}/>
-      <${KpiCard} title="Receita do Mês" value=${fmt(recMes)} sub=${MESES[MES_ATUAL-1]} icon="💰" color=${C.green}/>
+      <${KpiCard} title="Vendido Hoje" value=${fmt(vendidoHoje)} sub="pedidos + vendas do dia" icon="💵" color=${C.green}/>
+      <${KpiCard} title="Vendido no Mês" value=${fmt(vendidoMes)} sub=${'fechado em '+MESES[MES_ATUAL-1]} icon="🛒" color=${C.blue}/>
+      <${KpiCard} title="Recebido no Mês" value=${fmt(recMes)} sub=${'entrou no caixa em '+MESES[MES_ATUAL-1]} icon="💰" color=${C.green}/>
       <${KpiCard} title="Despesas do Mês" value=${fmt(despMes)} sub=${MESES[MES_ATUAL-1]} icon="📤" color=${C.red}/>
-      <${KpiCard} title="Resultado do Mês" value=${fmt(resultado)} sub="receita − despesa" icon="📊" color=${resultado>=0?C.green:C.red}/>
-      <${KpiCard} title="Margem Média" value=${margemMedia!==null?margemMedia+'%':'—'} sub="da carteira" icon="📈" color=${C.green}/>
-      <${KpiCard} title="Pedidos Ativos" value=${ativos.length} sub="em andamento" icon="📦" color=${C.blue}/>
-      <${KpiCard} title="A Receber" value=${fmt(tRec)} sub="em aberto" icon="🏦" color=${C.purple}/>
+      <${KpiCard} title="Resultado do Mês" value=${fmt(resultado)} sub="recebido − despesas" icon="📊" color=${resultado>=0?C.green:C.red}/>
+      <${KpiCard} title="A Receber" value=${fmt(tRec)} sub="ainda não pago" icon="🏦" color=${C.purple}/>
+      <${KpiCard} title="Pedidos em Andamento" value=${ativos.length} sub="não concluídos" icon="📦" color=${C.blue}/>
+      <${KpiCard} title="Margem Média" value=${margemMedia!==null?margemMedia+'%':'—'} sub=${`de ${comCusto.length} pedidos com custo`} icon="📈" color=${C.green}/>
     </div>
-    <div style=${{display:'grid',gridTemplateColumns:isMobile?'1fr':'1fr 1fr',gap:14}}>
-      <${Card}>
-        <${GaugeMeta} valor=${recMes} meta=${data.meta}/>
-      </${Card}>
-      <${Card}>
-        <${BarRecDesp} dados=${data.chartData} height=${isMobile?150:170}/>
-      </${Card}>
-    </div>
+    <${Card}>
+      <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:8}}>📊 Recebido × Despesas — últimos 6 meses</div>
+      <${GraficoBarras} dados=${data.chartData} height=${isMobile?140:170} destaque=${5}/>
+    </${Card}>
     ${prazosAlerta.length>0&&html`<div style=${{background:C.red+'11',border:`1px solid ${C.red}33`,borderRadius:12,padding:12}}>
-      <div style=${{fontWeight:700,color:C.red,fontSize:12,marginBottom:8}}>⏰ Prazos Próximos ou Atrasados</div>
+      <div style=${{fontWeight:700,color:C.red,fontSize:12,marginBottom:8}}>⏰ Prazos Próximos ou Atrasados (${prazosAlerta.length})</div>
       <div style=${{display:'flex',flexDirection:'column',gap:6}}>
-        ${prazosAlerta.map(p=>html`<div key=${p.id} style=${{display:'flex',justifyContent:'space-between',alignItems:'center',background:C.card,borderRadius:8,padding:'8px 10px'}}>
-          <div>
+        ${prazosVisiveis.map(p=>html`<div key=${p.id} style=${{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,background:C.card,borderRadius:8,padding:'8px 10px'}}>
+          <div style=${{minWidth:0}}>
             <span style=${{fontSize:12,color:C.gold,fontWeight:700,fontFamily:'monospace'}}>${p.codigo}</span>
             <span style=${{fontSize:12,color:C.text,marginLeft:8}}>${p.cliente_nome}</span>
+            <span style=${{fontSize:10,color:C.muted,marginLeft:8}}>${p.status}</span>
           </div>
-          <${Badge} label=${p.dias<0?`${Math.abs(p.dias)}d atrasado`:p.dias===0?'Vence hoje':`${p.dias}d restantes`} color=${p.dias<0?C.red:p.dias===0?C.red:C.gold}/>
+          <${Badge} label=${p.dias<0?`${Math.abs(p.dias)}d atrasado`:p.dias===0?'Vence hoje':`${p.dias}d restantes`} color=${p.dias<=0?C.red:C.gold}/>
         </div>`)}
       </div>
+      ${prazosAlerta.length>5&&html`<div style=${{textAlign:'center',marginTop:8}}>
+        <${Btn} small color=${C.red} onClick=${()=>setVerTodosPrazos(v=>!v)}>${verTodosPrazos?'Mostrar só os 5 mais urgentes':`Ver todos (${prazosAlerta.length})`}</${Btn}>
+      </div>`}
     </div>`}
     <${Card}>
       <${SecTitle}>Pedidos Recentes</${SecTitle}>
       ${data.pedidos.length===0?html`<${Empty}/>`:data.pedidos.slice(0,5).map(p=>{
-        const cor=cP[p.status]||C.muted;
+        const cor=COR_ST[p.status]||C.muted;
         return html`<div key=${p.id} style=${{background:C.surface,borderRadius:10,padding:12,borderLeft:`3px solid ${cor}`,marginBottom:8}}>
           <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-            <div><div style=${{fontSize:10,color:C.gold,fontWeight:700}}>${p.codigo}</div>
+            <div><div style=${{fontSize:10,color:C.gold,fontWeight:700}}>${p.codigo}${p.vendedor_nome&&html`<span style=${{color:C.muted,fontWeight:500}}> · 👤 ${p.vendedor_nome}</span>`}</div>
               <div style=${{fontSize:13,color:C.text,fontWeight:600,marginTop:1}}>${p.cliente_nome}</div></div>
             <div style=${{textAlign:'right'}}>
               <div style=${{fontSize:13,color:C.green,fontWeight:800}}>${fmt(p.valor_total)}</div>
@@ -667,8 +662,8 @@ function Dashboard({db,isMobile}){
             </div>
           </div>
           <div style=${{display:'flex',alignItems:'center',gap:8,marginTop:8}}>
-            <${PBar} value=${p.progresso} color=${cor}/>
-            <span style=${{fontSize:9,color:C.muted,minWidth:26}}>${p.progresso}%</span>
+            <${PBar} value=${PROG[p.status]??0} color=${cor}/>
+            <span style=${{fontSize:9,color:C.muted,minWidth:26}}>${PROG[p.status]??0}%</span>
           </div>
         </div>`;
       })}
@@ -689,17 +684,29 @@ function Financeiro({db,isMobile,role}){
   useEffect(()=>{load();},[]);
   const dC=async(t,id)=>{if(!confirm('Excluir?'))return;await db.del(t==='receber'?'contas_receber':'contas_pagar',id);load();};
   const dL=async id=>{if(!confirm('Excluir?'))return;await db.del('lancamentos',id);load();};
+  const [mes,setMes]=useState(MES_ISO);
+  const [busca,setBusca]=useState('');
+  const [soAbertos,setSoAbertos]=useState(false);
+  const mesesDisp=[...new Set([MES_ISO,...lan.map(l=>l.data),...rec.map(c=>c.vencimento),...pag.map(c=>c.vencimento)].filter(Boolean).map(d=>d.slice(0,7)))].sort().reverse();
+  const nomeMes=m=>`${MESES[+m.slice(5,7)-1]} ${m.slice(0,4)}`;
+  const noMes=d=>mes==='todos'||(d||'').slice(0,7)===mes;
+  const bate=txt=>!busca||(txt||'').toLowerCase().includes(busca.toLowerCase());
+  const recF=rec.filter(c=>noMes(c.vencimento)&&bate(c.cliente_nome)&&(!soAbertos||c.status!=='Pago'));
+  const pagF=pag.filter(c=>noMes(c.vencimento)&&bate(c.fornecedor)&&(!soAbertos||c.status!=='Pago'));
+  const lanF=lan.filter(l=>noMes(l.data)&&(bate(l.descricao)||bate(l.categoria)));
+  const lanPeriodo=lan.filter(l=>noMes(l.data));
   const tR=rec.filter(c=>c.status!=='Pago').reduce((s,c)=>s+ +c.valor,0);
   const tP=pag.filter(c=>c.status!=='Pago').reduce((s,c)=>s+ +c.valor,0);
-  const tRL=lan.filter(l=>l.tipo==='receita').reduce((s,l)=>s+ +l.valor,0);
-  const tDL=lan.filter(l=>l.tipo==='despesa').reduce((s,l)=>s+ +l.valor,0);
+  const tRL=lanPeriodo.filter(l=>l.tipo==='receita').reduce((s,l)=>s+ +l.valor,0);
+  const tDL=lanPeriodo.filter(l=>l.tipo==='despesa').reduce((s,l)=>s+ +l.valor,0);
+  const periodo=mes==='todos'?'todo o período':nomeMes(mes);
   const statusCorRec=s=>s==='Vencido'?C.red:s==='Pago'?C.green:C.blue;
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
     <${KpiGrid} isMobile=${isMobile}>
-      <${KpiCard} title="A Receber" value=${fmt(tR)} sub="em aberto" icon="⬇️" color=${C.green}/>
-      <${KpiCard} title="A Pagar" value=${fmt(tP)} sub="pendente" icon="⬆️" color=${C.red}/>
-      <${KpiCard} title="Receitas" value=${fmt(tRL)} sub="total lançado" icon="💰" color=${C.gold}/>
-      <${KpiCard} title="Resultado" value=${fmt(tRL-tDL)} sub="líquido" icon="📊" color=${tRL-tDL>=0?C.green:C.red}/>
+      <${KpiCard} title="A Receber" value=${fmt(tR)} sub="em aberto (total)" icon="⬇️" color=${C.green}/>
+      <${KpiCard} title="A Pagar" value=${fmt(tP)} sub="pendente (total)" icon="⬆️" color=${C.red}/>
+      <${KpiCard} title="Receitas" value=${fmt(tRL)} sub=${periodo} icon="💰" color=${C.gold}/>
+      <${KpiCard} title="Resultado" value=${fmt(tRL-tDL)} sub=${'receitas − despesas · '+periodo} icon="📊" color=${tRL-tDL>=0?C.green:C.red}/>
     </${KpiGrid}>
     <div style=${{display:'flex',borderBottom:`1px solid ${C.border}`,overflowX:'auto'}}>
       ${[['receber','A Receber'],['pagar','A Pagar'],['lancamentos','Lançamentos']].map(([k,v])=>html`
@@ -707,10 +714,18 @@ function Financeiro({db,isMobile,role}){
           padding:isMobile?'9px 14px':'10px 20px',fontSize:12,fontWeight:700,whiteSpace:'nowrap',
           color:aba===k?C.gold:C.muted,borderBottom:aba===k?`2px solid ${C.gold}`:'2px solid transparent',flexShrink:0}}>${v}</button>`)}
     </div>
+    <div style=${{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+      <select value=${mes} onChange=${e=>setMes(e.target.value)} style=${{...inputSt,width:'auto',minWidth:150}}>
+        ${mesesDisp.map(m=>html`<option key=${m} value=${m}>${nomeMes(m)}</option>`)}
+        <option value="todos">Todos os meses</option>
+      </select>
+      <input value=${busca} onInput=${e=>setBusca(e.target.value)} placeholder="🔍 Buscar..." style=${{...inputSt,flex:1,width:'auto',minWidth:140}}/>
+      ${aba!=='lancamentos'&&html`<${Btn} small color=${soAbertos?C.gold:C.muted} onClick=${()=>setSoAbertos(v=>!v)}>${soAbertos?'✓ ':''}Só em aberto</${Btn}>`}
+    </div>
     ${loading?html`<${Spin}/>`:html`<div>
       ${aba==='receber'&&html`<div>
         <div style=${{display:'flex',justifyContent:'flex-end',marginBottom:10}}><${Btn} onClick=${()=>setModal({tipo:'receber'})}>+ A Receber</${Btn}></div>
-        ${rec.length===0?html`<${Empty}/>`:rec.map(c=>html`<${Card} key=${c.id} style=${{marginBottom:8,borderLeft:`3px solid ${statusCorRec(c.status)}`}}>
+        ${recF.length===0?html`<${Empty}/>`:recF.map(c=>html`<${Card} key=${c.id} style=${{marginBottom:8,borderLeft:`3px solid ${statusCorRec(c.status)}`}}>
           <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
             <div><div style=${{fontSize:13,color:C.text,fontWeight:600}}>${c.cliente_nome}</div>
               <div style=${{fontSize:10,color:C.muted,marginTop:2}}>Vence: ${new Date(c.vencimento+'T12:00').toLocaleDateString('pt-BR')}</div></div>
@@ -725,7 +740,7 @@ function Financeiro({db,isMobile,role}){
       </div>`}
       ${aba==='pagar'&&html`<div>
         <div style=${{display:'flex',justifyContent:'flex-end',marginBottom:10}}><${Btn} onClick=${()=>setModal({tipo:'pagar'})}>+ A Pagar</${Btn}></div>
-        ${pag.length===0?html`<${Empty}/>`:pag.map(c=>html`<${Card} key=${c.id} style=${{marginBottom:8,borderLeft:`3px solid ${c.status==='Pago'?C.green:C.red}`}}>
+        ${pagF.length===0?html`<${Empty}/>`:pagF.map(c=>html`<${Card} key=${c.id} style=${{marginBottom:8,borderLeft:`3px solid ${c.status==='Pago'?C.green:C.red}`}}>
           <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
             <div><div style=${{fontSize:13,color:C.text,fontWeight:600}}>${c.fornecedor}</div>
               <div style=${{fontSize:10,color:C.muted,marginTop:2,display:'flex',alignItems:'center',gap:6}}>
@@ -741,7 +756,7 @@ function Financeiro({db,isMobile,role}){
       </div>`}
       ${aba==='lancamentos'&&html`<div>
         <div style=${{display:'flex',justifyContent:'flex-end',marginBottom:10}}><${Btn} onClick=${()=>setModal({tipo:'lancamento'})}>+ Lançamento</${Btn}></div>
-        ${lan.length===0?html`<${Empty}/>`:lan.map(l=>html`<${Card} key=${l.id} style=${{marginBottom:8,borderLeft:`3px solid ${l.tipo==='receita'?C.green:C.red}`}}>
+        ${lanF.length===0?html`<${Empty}/>`:lanF.map(l=>html`<${Card} key=${l.id} style=${{marginBottom:8,borderLeft:`3px solid ${l.tipo==='receita'?C.green:C.red}`}}>
           <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <div><div style=${{fontSize:13,color:C.text,fontWeight:600}}>${l.descricao}</div>
               <div style=${{fontSize:10,color:C.muted,marginTop:2}}>${new Date(l.data+'T12:00').toLocaleDateString('pt-BR')} · ${l.categoria}</div></div>
@@ -767,144 +782,191 @@ function Financeiro({db,isMobile,role}){
 }
 
 // ── SEÇÃO: PEDIDOS ────────────────────────────────────────────────────────────
-function Pedidos({db,isMobile}){
-  const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);const [modal,setModal]=useState(null);
-  const cP={Orçamento:C.muted,Aprovação:C.purple,Arte:C.gold,Produção:C.blue,Entrega:C.green,Concluído:C.green};
-  const load=useCallback(async()=>{setLoading(true);try{setRows(await db.get('pedidos'));}catch{}finally{setLoading(false);}  },[]);
+const MaisBtn=({total,visiveis,onClick})=>total>visiveis&&html`<div style=${{textAlign:'center',marginTop:4}}>
+  <${Btn} small color=${C.muted} onClick=${onClick}>Mostrar mais (${total-visiveis} restantes)</${Btn}>
+</div>`;
+
+function Pedidos({db,isMobile,session}){
+  const [rows,setRows]=useState([]);const [perfis,setPerfis]=useState([]);const [clis,setClis]=useState([]);
+  const [loading,setLoading]=useState(true);const [modal,setModal]=useState(null);
+  const [filtro,setFiltro]=useState('andamento');const [busca,setBusca]=useState('');
+  const [limite,setLimite]=useState(30);const [ocupado,setOcupado]=useState(null);
+  const load=useCallback(async()=>{
+    setLoading(true);
+    try{const [p,pf,c]=await Promise.all([db.get('pedidos'),db.get('profiles'),db.get('clientes')]);setRows(p);setPerfis(pf);setClis(c);}
+    catch{}finally{setLoading(false);}
+  },[]);
   useEffect(()=>{load();},[]);
   const del=async id=>{if(!confirm('Excluir pedido?'))return;await db.del('pedidos',id);load();};
+  const acao=async(p,fn)=>{setOcupado(p.id);try{await fn();}catch(e){alert('Erro: '+e.message);}finally{setOcupado(null);load();}};
+  const avancar=p=>acao(p,()=>mudarStatus(db,p,proxStatus(p.status)));
+  const desfazer=p=>{
+    if(!confirm(`Voltar ${p.codigo} para "${p.status_anterior}"?`)) return;
+    acao(p,()=>db.patch('pedidos',p.id,{status:p.status_anterior,progresso:PROG[p.status_anterior]??0,status_anterior:null}));
+  };
   const ativos=rows.filter(p=>p.status!=='Concluído');
   const comCusto=rows.filter(p=>+p.custo_total>0&&+p.valor_total>0);
   const margemMediaP=comCusto.length>0?Math.round(comCusto.reduce((s,p)=>s+((p.valor_total-p.custo_total)/p.valor_total*100),0)/comCusto.length):null;
+  const nomesClientes=[...new Map([...rows.map(p=>p.cliente_nome),...clis.map(c=>c.nome)].filter(Boolean).map(n=>[normNome(n),n.trim()])).values()].sort();
+  const nomesVendedores=[...new Set([...perfis.map(p=>p.nome),...rows.map(p=>p.vendedor_nome)].filter(Boolean))].sort();
+  const chips=[['andamento','Em andamento',ativos.length],['todos','Todos',rows.length],...STATUS.map(s=>[s,s,rows.filter(p=>p.status===s).length])].filter(([k,,n])=>n>0||k==='andamento');
+  const termo=busca.toLowerCase();
+  const fil=rows.filter(p=>(filtro==='todos'||(filtro==='andamento'?p.status!=='Concluído':p.status===filtro))
+    &&(!termo||[p.codigo,p.cliente_nome,p.vendedor_nome].some(t=>(t||'').toLowerCase().includes(termo))));
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
     <${KpiGrid} isMobile=${isMobile}>
-      <${KpiCard} title="Pedidos Ativos" value=${ativos.length} sub="em andamento" icon="📋" color=${C.blue}/>
-      <${KpiCard} title="Em Carteira" value=${fmt(ativos.reduce((s,p)=>s+ +p.valor_total,0))} sub="total" icon="💰" color=${C.gold}/>
-      <${KpiCard} title="Margem Média" value=${margemMediaP!==null?margemMediaP+'%':'—'} sub="da carteira" icon="📈" color=${C.green}/>
-      <${KpiCard} title="Concluídos" value=${rows.filter(p=>p.status==='Concluído').length} sub="total" icon="✅" color=${C.green}/>
+      <${KpiCard} title="Em Andamento" value=${ativos.length} sub="pedidos não concluídos" icon="📋" color=${C.blue}/>
+      <${KpiCard} title="Em Carteira" value=${fmt(ativos.reduce((s,p)=>s+ +p.valor_total,0))} sub="valor em andamento" icon="💰" color=${C.gold}/>
+      <${KpiCard} title="Margem Média" value=${margemMediaP!==null?margemMediaP+'%':'—'} sub=${`de ${comCusto.length} pedidos com custo`} icon="📈" color=${C.green}/>
+      <${KpiCard} title="Concluídos" value=${rows.length-ativos.length} sub="total" icon="✅" color=${C.green}/>
     </${KpiGrid}>
-    <div style=${{display:'flex',justifyContent:'flex-end'}}><${Btn} onClick=${()=>setModal({})}>+ Novo Pedido</${Btn}></div>
-    ${loading?html`<${Spin}/>`:rows.length===0?html`<${Empty} msg="Nenhum pedido cadastrado"/>`:rows.map(p=>{
-      const cor=cP[p.status]||C.muted;
-      const vt=+p.valor_total||0; const ct=+p.custo_total||0;
-      const temMargem=ct>0;
-      const margemRS=vt-ct; const margemPct=vt>0?Math.round((margemRS/vt)*100):0;
-      return html`<div key=${p.id} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,borderLeft:`3px solid ${cor}`,marginBottom:8}}>
-        <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:7}}>
-          <div><div style=${{fontSize:10,color:C.gold,fontWeight:700,fontFamily:'monospace'}}>${p.codigo}</div>
-            <div style=${{fontSize:13,color:C.text,fontWeight:700,marginTop:2}}>${p.cliente_nome}</div></div>
-          <div style=${{textAlign:'right'}}><${Badge} label=${p.status} color=${cor}/>
-            ${p.prazo&&html`<div style=${{fontSize:10,color:C.muted,marginTop:4}}>📅 ${new Date(p.prazo+'T12:00').toLocaleDateString('pt-BR')}</div>`}</div>
-        </div>
-        <div style=${{display:'flex',justifyContent:'space-between',marginBottom:7}}>
-          <span style=${{fontSize:15,color:C.green,fontWeight:800}}>${fmt(p.valor_total)}</span>
-          <span style=${{fontSize:10,color:C.muted}}>${fmtN(p.quantidade_itens)} itens</span>
-        </div>
-        ${temMargem&&html`<div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',background:C.surface,borderRadius:8,padding:'6px 10px',marginBottom:9}}>
-          <span style=${{fontSize:10,color:C.muted}}>Custo: ${fmt(ct)}</span>
-          <span style=${{fontSize:11,fontWeight:700,color:margemRS>=0?C.green:C.red}}>Margem: ${fmt(margemRS)} (${margemPct}%)</span>
-        </div>`}
-        <div style=${{display:'flex',alignItems:'center',gap:8,marginBottom:9}}>
-          <${PBar} value=${p.progresso} color=${cor}/>
-          <span style=${{fontSize:10,color:C.muted,minWidth:28}}>${p.progresso}%</span>
-        </div>
-        ${p.observacoes&&html`<div style=${{fontSize:11,color:C.muted,marginBottom:8}}>${p.observacoes}</div>`}
-        <div style=${{display:'flex',gap:7}}>
-          <${Btn} small onClick=${()=>setModal({item:p})}>✏️ Editar</${Btn}>
-          <${Btn} small color=${C.red} onClick=${()=>del(p.id)}>🗑 Excluir</${Btn}>
-        </div>
-      </div>`;
-    })}
+    <div style=${{display:'flex',gap:10,flexWrap:'wrap'}}>
+      <input value=${busca} onInput=${e=>{setBusca(e.target.value);setLimite(30);}} placeholder="🔍 Buscar por cliente, código ou vendedor..." style=${{...inputSt,flex:1,width:'auto',minWidth:180}}/>
+      <${Btn} onClick=${()=>setModal({})}>+ Novo Pedido</${Btn}>
+    </div>
+    <div style=${{display:'flex',gap:6,flexWrap:'wrap'}}>
+      ${chips.map(([k,l,n])=>html`<button key=${k} onClick=${()=>{setFiltro(k);setLimite(30);}} style=${{background:filtro===k?C.gold+'22':C.card,color:filtro===k?C.gold:C.muted,border:`1px solid ${filtro===k?C.gold+'44':C.border}`,borderRadius:20,padding:'5px 12px',fontSize:11,cursor:'pointer',fontWeight:700}}>${l} · ${n}</button>`)}
+    </div>
+    ${loading?html`<${Spin}/>`:fil.length===0?html`<${Empty} msg="Nenhum pedido encontrado"/>`:html`<div>
+      ${fil.slice(0,limite).map(p=>{
+        const cor=COR_ST[p.status]||C.muted;
+        const vt=+p.valor_total||0; const ct=+p.custo_total||0;
+        const margemRS=vt-ct; const margemPct=vt>0?Math.round((margemRS/vt)*100):0;
+        const prox=proxStatus(p.status); const busy=ocupado===p.id;
+        return html`<div key=${p.id} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,borderLeft:`3px solid ${cor}`,marginBottom:8,opacity:busy?.6:1}}>
+          <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:7,gap:8}}>
+            <div style=${{minWidth:0}}><div style=${{fontSize:10,color:C.gold,fontWeight:700,fontFamily:'monospace'}}>${p.codigo}</div>
+              <div style=${{fontSize:13,color:C.text,fontWeight:700,marginTop:2}}>${p.cliente_nome}</div>
+              <div style=${{fontSize:10,color:C.muted,marginTop:2}}>👤 ${p.vendedor_nome||'Sem vendedor'} · criado em ${fmtData(dataDe(p.created_at))}</div></div>
+            <div style=${{textAlign:'right',flexShrink:0}}><${Badge} label=${p.status} color=${cor}/>
+              ${p.prazo&&html`<div style=${{fontSize:10,color:C.muted,marginTop:4}}>📅 ${fmtData(p.prazo)}</div>`}</div>
+          </div>
+          ${p.status_anterior&&html`<div style=${{background:C.purple+'14',border:`1px solid ${C.purple}33`,borderRadius:8,padding:'6px 10px',marginBottom:8,fontSize:11,color:C.purple,display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+            <span>🔖 Concluído automaticamente na limpeza (estava em <strong>${p.status_anterior}</strong>)</span>
+            <${Btn} small color=${C.purple} disabled=${busy} onClick=${()=>desfazer(p)}>↩ Voltar para ${p.status_anterior}</${Btn}>
+          </div>`}
+          <div style=${{display:'flex',justifyContent:'space-between',marginBottom:7}}>
+            <span style=${{fontSize:15,color:C.green,fontWeight:800}}>${fmt(p.valor_total)}</span>
+            <span style=${{fontSize:10,color:C.muted}}>${fmtN(p.quantidade_itens)} itens</span>
+          </div>
+          ${ct>0&&html`<div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',background:C.surface,borderRadius:8,padding:'6px 10px',marginBottom:9}}>
+            <span style=${{fontSize:10,color:C.muted}}>Custo: ${fmt(ct)}</span>
+            <span style=${{fontSize:11,fontWeight:700,color:margemRS>=0?C.green:C.red}}>Margem: ${fmt(margemRS)} (${margemPct}%)</span>
+          </div>`}
+          <div style=${{display:'flex',alignItems:'center',gap:8,marginBottom:9}}>
+            <${PBar} value=${PROG[p.status]??0} color=${cor}/>
+            <span style=${{fontSize:10,color:C.muted,minWidth:28}}>${PROG[p.status]??0}%</span>
+          </div>
+          ${p.observacoes&&html`<div style=${{fontSize:11,color:C.muted,marginBottom:8}}>${p.observacoes}</div>`}
+          <div style=${{display:'flex',gap:7,flexWrap:'wrap'}}>
+            ${prox&&html`<${Btn} small color=${COR_ST[prox]} disabled=${busy} onClick=${()=>avancar(p)}>${busy?'...':`Avançar ▸ ${prox}`}</${Btn}>`}
+            <${Btn} small onClick=${()=>setModal({item:p})}>✏️ Editar</${Btn}>
+            <${Btn} small color=${C.red} onClick=${()=>del(p.id)}>🗑 Excluir</${Btn}>
+          </div>
+        </div>`;
+      })}
+      <${MaisBtn} total=${fil.length} visiveis=${limite} onClick=${()=>setLimite(l=>l+30)}/>
+    </div>`}
     ${modal!==null&&html`<${Modal} title=${modal.item?'Editar Pedido':'Novo Pedido'} onClose=${()=>setModal(null)}>
-      <${FormPedido} db=${db} item=${modal.item} onDone=${ok=>{setModal(null);if(ok)load();}}/>
+      <${FormPedido} db=${db} item=${modal.item} session=${session} codigoNovo=${proximoCodigo(rows)} clientes=${nomesClientes} vendedores=${nomesVendedores} onDone=${ok=>{setModal(null);if(ok)load();}}/>
     </${Modal}>`}
   </div>`;
 }
 
 // ── SEÇÃO: CLIENTES ───────────────────────────────────────────────────────────
+// A lista é montada a partir dos pedidos; o cadastro manual só complementa (setor, e-mail, telefone)
 function Clientes({db,isMobile}){
   const [rows,setRows]=useState([]);const [pedidos,setPedidos]=useState([]);
   const [loading,setLoading]=useState(true);const [modal,setModal]=useState(null);
   const [busca,setBusca]=useState('');const [soSumidos,setSoSumidos]=useState(false);
+  const [ordem,setOrdem]=useState('recente');const [limite,setLimite]=useState(30);
   const load=useCallback(async()=>{
     setLoading(true);
-    try{
-      const [cli,ped]=await Promise.all([db.get('clientes'),db.get('pedidos')]);
-      setRows(cli);setPedidos(ped);
-    }catch{}finally{setLoading(false);}
+    try{const [cli,ped]=await Promise.all([db.get('clientes'),db.get('pedidos')]);setRows(cli);setPedidos(ped);}
+    catch{}finally{setLoading(false);}
   },[]);
   useEffect(()=>{load();},[]);
-  const del=async id=>{if(!confirm('Excluir cliente?'))return;await db.del('clientes',id);load();};
+  const del=async c=>{if(!confirm(`Excluir o cadastro de ${c.nome}?\n\nOs pedidos não são afetados; o cliente continua aparecendo pela lista de pedidos.`))return;await db.del('clientes',c.id);load();};
 
-  const norm=s=>(s||'').trim().toLowerCase();
-  const statsCliente=nome=>{
-    const matched=pedidos.filter(p=>norm(p.cliente_nome)===norm(nome));
-    const totalComprado=matched.reduce((s,p)=>s+ +p.valor_total,0);
-    const qtdPedidos=matched.length;
-    const datas=matched.map(p=>p.created_at).filter(Boolean).sort();
-    const ultimaData=datas.length?datas[datas.length-1]:null;
-    let diasSemComprar=null;
-    if(ultimaData){
-      diasSemComprar=Math.floor((Date.now()-new Date(ultimaData))/86400000);
-    }
-    const sumido=qtdPedidos===0||diasSemComprar>90;
-    return {totalComprado,qtdPedidos,ultimaData,diasSemComprar,sumido};
-  };
-
-  const enriquecidos=rows.map(r=>({...r,_stats:statsCliente(r.nome)}));
-  const totalSumidos=enriquecidos.filter(r=>r._stats.sumido).length;
-  const fil=enriquecidos.filter(r=>{
-    const matchBusca=r.nome?.toLowerCase().includes(busca.toLowerCase())||r.setor?.toLowerCase().includes(busca.toLowerCase());
-    if(soSumidos) return matchBusca&&r._stats.sumido;
-    return matchBusca;
+  const mapa=new Map();
+  pedidos.forEach(p=>{
+    const k=normNome(p.cliente_nome); if(!k) return;
+    const c=mapa.get(k)||{chave:k,nome:p.cliente_nome.trim(),total:0,qtd:0,ultima:null,cad:null};
+    c.total+= +p.valor_total||0; c.qtd++;
+    if(!c.ultima||p.created_at>c.ultima) c.ultima=p.created_at;
+    mapa.set(k,c);
   });
+  rows.forEach(r=>{
+    const k=normNome(r.nome);
+    const c=mapa.get(k)||{chave:k,nome:r.nome,total:0,qtd:0,ultima:null};
+    mapa.set(k,{...c,cad:r});
+  });
+  const agora=Date.now();
+  const todos=[...mapa.values()].map(c=>{
+    const dias=c.ultima?Math.floor((agora-new Date(c.ultima))/86400000):null;
+    return {...c,dias,sumido:c.qtd===0||dias>90};
+  });
+  const totalSumidos=todos.filter(c=>c.sumido).length;
+  const recorrentes=todos.filter(c=>c.qtd>=2).length;
+  const totalPedidos=todos.reduce((s,c)=>s+c.qtd,0);
+  const ticket=totalPedidos?todos.reduce((s,c)=>s+c.total,0)/totalPedidos:0;
+  const termo=busca.toLowerCase();
+  const ordenar={recente:(a,b)=>(b.ultima||'').localeCompare(a.ultima||''),valor:(a,b)=>b.total-a.total,az:(a,b)=>a.nome.localeCompare(b.nome)}[ordem];
+  const fil=todos.filter(c=>(!termo||c.nome.toLowerCase().includes(termo)||(c.cad?.setor||'').toLowerCase().includes(termo))&&(!soSumidos||c.sumido)).sort(ordenar);
 
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
     <${KpiGrid} isMobile=${isMobile}>
-      <${KpiCard} title="Total Clientes" value=${rows.length} sub="cadastrados" icon="🏢" color=${C.blue}/>
-      <${KpiCard} title="Setores" value=${new Set(rows.map(r=>r.setor).filter(Boolean)).size} sub="diferentes" icon="🏷️" color=${C.gold}/>
+      <${KpiCard} title="Total Clientes" value=${todos.length} sub="vindos dos pedidos" icon="🏢" color=${C.blue}/>
+      <${KpiCard} title="Recorrentes" value=${recorrentes} sub="2 ou mais pedidos" icon="🔁" color=${C.green}/>
       <${KpiCard} title="Clientes Sumidos" value=${totalSumidos} sub="90+ dias sem comprar" icon="⚠️" color=${totalSumidos>0?C.red:C.green}/>
+      <${KpiCard} title="Ticket Médio" value=${fmt(ticket)} sub="por pedido" icon="🧾" color=${C.gold}/>
     </${KpiGrid}>
     <div style=${{display:'flex',gap:10,flexWrap:'wrap'}}>
-      <input value=${busca} onInput=${e=>setBusca(e.target.value)} placeholder="🔍 Buscar cliente..." style=${{flex:1,minWidth:150,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 14px',color:C.text,fontSize:13,outline:'none'}}/>
-      <${Btn} color=${soSumidos?C.red:C.muted} onClick=${()=>setSoSumidos(s=>!s)}>${soSumidos?'✓ ':''}Sumidos</${Btn}>
+      <input value=${busca} onInput=${e=>{setBusca(e.target.value);setLimite(30);}} placeholder="🔍 Buscar cliente..." style=${{...inputSt,flex:1,width:'auto',minWidth:150}}/>
+      <select value=${ordem} onChange=${e=>setOrdem(e.target.value)} style=${{...inputSt,width:'auto'}}>
+        <option value="recente">Compra mais recente</option>
+        <option value="valor">Maior valor comprado</option>
+        <option value="az">Nome (A–Z)</option>
+      </select>
+      <${Btn} color=${soSumidos?C.red:C.muted} onClick=${()=>{setSoSumidos(s=>!s);setLimite(30);}}>${soSumidos?'✓ ':''}Sumidos</${Btn}>
       <${Btn} onClick=${()=>setModal({})}>+ Cliente</${Btn}>
     </div>
-    ${loading?html`<${Spin}/>`:fil.length===0?html`<${Empty} msg="Nenhum cliente encontrado"/>`:fil.map(c=>{
-      const st=c._stats;
-      return html`<div key=${c.id} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,borderLeft:st.sumido?`3px solid ${C.red}`:`3px solid ${C.border}`,marginBottom:8}}>
-      <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-        <div><div style=${{fontSize:13,color:C.text,fontWeight:700}}>${c.nome}</div>
-          <div style=${{marginTop:4,display:'flex',gap:6,flexWrap:'wrap'}}>
-            ${c.setor&&html`<${Badge} label=${c.setor} color=${C.blue}/>`}
-            ${st.sumido&&html`<${Badge} label=${st.qtdPedidos===0?'Nunca comprou':'Sumido'} color=${C.red}/>`}
+    ${loading?html`<${Spin}/>`:fil.length===0?html`<${Empty} msg="Nenhum cliente encontrado"/>`:html`<div>
+      ${fil.slice(0,limite).map(c=>html`<div key=${c.chave} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,borderLeft:c.sumido?`3px solid ${C.red}`:`3px solid ${C.border}`,marginBottom:8}}>
+        <div style=${{fontSize:13,color:C.text,fontWeight:700}}>${c.nome}</div>
+        <div style=${{marginTop:4,display:'flex',gap:6,flexWrap:'wrap'}}>
+          ${c.cad?.setor&&html`<${Badge} label=${c.cad.setor} color=${C.blue}/>`}
+          ${c.qtd>=2&&html`<${Badge} label="Recorrente" color=${C.green}/>`}
+          ${c.sumido&&html`<${Badge} label=${c.qtd===0?'Nunca comprou':'Sumido'} color=${C.red}/>`}
+          ${!c.cad&&html`<${Badge} label="Sem cadastro" color=${C.muted}/>`}
+        </div>
+        <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:7,marginTop:10}}>
+          <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}>
+            <div style=${{fontSize:13,color:C.gold,fontWeight:800}}>${c.qtd}</div>
+            <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Pedidos</div>
+          </div>
+          <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}>
+            <div style=${{fontSize:11,color:C.green,fontWeight:800}}>${c.total>0?fmt(c.total):'—'}</div>
+            <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Total</div>
+          </div>
+          <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}>
+            <div style=${{fontSize:11,color:c.sumido?C.red:C.text,fontWeight:800}}>${c.ultima?fmtData(dataDe(c.ultima)):'Nunca'}</div>
+            <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>${c.ultima?`Últ. compra · ${c.dias}d`:'Últ. compra'}</div>
           </div>
         </div>
-      </div>
-      <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:7,marginTop:10}}>
-        <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}>
-          <div style=${{fontSize:13,color:C.gold,fontWeight:800}}>${st.qtdPedidos}</div>
-          <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Pedidos</div>
+        ${c.cad&&(c.cad.email||c.cad.telefone)&&html`<div style=${{marginTop:8,display:'flex',gap:12,flexWrap:'wrap'}}>
+          ${c.cad.email&&html`<span style=${{fontSize:11,color:C.muted}}>✉️ ${c.cad.email}</span>`}
+          ${c.cad.telefone&&html`<span style=${{fontSize:11,color:C.muted}}>📞 ${c.cad.telefone}</span>`}
+        </div>`}
+        <div style=${{display:'flex',gap:7,marginTop:10}}>
+          ${c.cad?html`<${Btn} small onClick=${()=>setModal({item:c.cad})}>✏️ Editar contato</${Btn}>
+            <${Btn} small color=${C.red} onClick=${()=>del(c.cad)}>🗑 Excluir cadastro</${Btn}>`
+          :html`<${Btn} small onClick=${()=>setModal({item:{nome:c.nome}})}>📇 Completar cadastro</${Btn}>`}
         </div>
-        <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}>
-          <div style=${{fontSize:11,color:C.green,fontWeight:800}}>${st.totalComprado>0?fmt(st.totalComprado):'—'}</div>
-          <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Total</div>
-        </div>
-        <div style=${{textAlign:'center',background:C.surface,borderRadius:8,padding:'6px 4px'}}>
-          <div style=${{fontSize:11,color:st.sumido?C.red:C.text,fontWeight:800}}>${st.ultimaData?`${st.diasSemComprar}d atrás`:'Nunca'}</div>
-          <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Últ. Compra</div>
-        </div>
-      </div>
-      <div style=${{marginTop:8,display:'flex',gap:12,flexWrap:'wrap'}}>
-        ${c.email&&html`<span style=${{fontSize:11,color:C.muted}}>✉️ ${c.email}</span>`}
-        ${c.telefone&&html`<span style=${{fontSize:11,color:C.muted}}>📞 ${c.telefone}</span>`}
-      </div>
-      <div style=${{display:'flex',gap:7,marginTop:10}}>
-        <${Btn} small onClick=${()=>setModal({item:c})}>✏️ Editar</${Btn}>
-        <${Btn} small color=${C.red} onClick=${()=>del(c.id)}>🗑 Excluir</${Btn}>
-      </div>
-    </div>`;})}
-    ${modal!==null&&html`<${Modal} title=${modal.item?'Editar Cliente':'Novo Cliente'} onClose=${()=>setModal(null)}>
+      </div>`)}
+      <${MaisBtn} total=${fil.length} visiveis=${limite} onClick=${()=>setLimite(l=>l+30)}/>
+    </div>`}
+    ${modal!==null&&html`<${Modal} title=${modal.item?.id?'Editar Cliente':'Cadastrar Cliente'} onClose=${()=>setModal(null)}>
       <${FormCliente} db=${db} item=${modal.item} onDone=${ok=>{setModal(null);if(ok)load();}}/>
     </${Modal}>`}
   </div>`;
@@ -964,252 +1026,112 @@ function Estoque({db,isMobile}){
   </div>`;
 }
 
-// ── SEÇÃO: METAS ──────────────────────────────────────────────────────────────
-function Metas({db,isMobile}){
-  const [ano,setAno]=useState(ANO_ATUAL);
-  const [valores,setValores]=useState(Array(12).fill(''));
-  const [loading,setLoading]=useState(true);
-  const [saving,setSaving]=useState(false);
-  const [msg,setMsg]=useState('');
-  const [msgTipo,setMsgTipo]=useState('ok');
-
-  useEffect(()=>{
-    (async()=>{
-      setLoading(true);
-      try{
-        const rows=await db.get('metas',`ano=eq.${ano}`);
-        const vals=Array(12).fill('');
-        rows.forEach(r=>{vals[r.mes-1]=r.valor>0?String(r.valor):'';});
-        setValores(vals);
-      }catch{}finally{setLoading(false);}
-    })();
-  },[ano]);
-
-  const save=async()=>{
-    setSaving(true);setMsg('');
-    try{
-      const ops=valores.map((v,i)=>v&&+v>0?db.upsert('metas',{ano,mes:i+1,valor:+v},'ano,mes'):Promise.resolve());
-      await Promise.all(ops);
-      setMsg('Metas salvas com sucesso!');setMsgTipo('ok');
-      setTimeout(()=>setMsg(''),3000);
-    }catch(e){setMsg('Erro: '+e.message);setMsgTipo('err');}
-    finally{setSaving(false);}
-  };
-
-  const totalMeta=valores.reduce((s,v)=>s+(+v||0),0);
-  const mediaMeta=totalMeta/12;
-
-  return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
-    <${KpiGrid} isMobile=${isMobile}>
-      <${KpiCard} title="Meta Anual" value=${fmt(totalMeta)} sub="soma dos meses" icon="🎯" color=${C.gold}/>
-      <${KpiCard} title="Média Mensal" value=${fmt(mediaMeta)} sub="por mês" icon="📊" color=${C.blue}/>
-      <${KpiCard} title="Meses Definidos" value=${valores.filter(v=>+v>0).length} sub="de 12" icon="📅" color=${C.green}/>
-      <${KpiCard} title="Mês Atual" value=${fmt(+valores[MES_ATUAL-1]||0)} sub=${MESES[MES_ATUAL-1]} icon="⭐" color=${C.purple}/>
-    </${KpiGrid}>
-
-    <${Card}>
-      <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
-        <${SecTitle}>Metas de Vendas — ${ano}</${SecTitle}>
-        <div style=${{display:'flex',gap:8,alignItems:'center'}}>
-          <button onClick=${()=>setAno(a=>a-1)} style=${{background:C.surface,border:`1px solid ${C.border}`,color:C.muted,borderRadius:8,padding:'6px 12px',cursor:'pointer',fontSize:13}}>‹</button>
-          <span style=${{color:C.text,fontWeight:700,fontSize:14}}>${ano}</span>
-          <button onClick=${()=>setAno(a=>a+1)} style=${{background:C.surface,border:`1px solid ${C.border}`,color:C.muted,borderRadius:8,padding:'6px 12px',cursor:'pointer',fontSize:13}}>›</button>
-        </div>
-      </div>
-      ${loading?html`<${Spin}/>`:html`<div>
-        <div style=${{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)',gap:10,marginBottom:16}}>
-          ${MESES.map((mes,i)=>html`<div key=${i} style=${{background:C.surface,borderRadius:10,padding:12,border:`1px solid ${i===MES_ATUAL-1&&ano===ANO_ATUAL?C.gold:C.border}`,position:'relative'}}>
-            ${i===MES_ATUAL-1&&ano===ANO_ATUAL&&html`<div style=${{position:'absolute',top:6,right:8,fontSize:9,color:C.gold,fontWeight:700}}>ATUAL</div>`}
-            <div style=${{fontSize:11,color:C.muted,fontWeight:600,marginBottom:6}}>${mes}</div>
-            <div style=${{position:'relative'}}>
-              <span style=${{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:C.muted,fontSize:12,pointerEvents:'none'}}>R$</span>
-              <input type="number" step="0.01" min="0"
-                value=${valores[i]}
-                onInput=${e=>{const v=[...valores];v[i]=e.target.value;setValores(v);}}
-                placeholder="0,00"
-                style=${{...inputSt,paddingLeft:30,fontSize:13}}/>
-            </div>
-          </div>`)}
-        </div>
-        ${msg&&(msgTipo==='ok'?html`<${OkBox} msg=${msg}/>`:html`<${ErrBox} msg=${msg}/>`)}
-        <${Btn} full onClick=${save} disabled=${saving}>${saving?'Salvando metas...':'💾 Salvar Todas as Metas'}</${Btn}>
-      </div>`}
-    </${Card}>
-  </div>`;
-}
-
-// ── MENUS ─────────────────────────────────────────────────────────────────────
-// ── SEÇÃO: HISTÓRICO ─────────────────────────────────────────────────────────
-function Historico({db,isMobile}){
+// ── SEÇÃO: METAS & HISTÓRICO ─────────────────────────────────────────────────
+function MetasHistorico({db,isMobile}){
   const [ano,setAno]=useState(ANO_ATUAL);
   const [dados,setDados]=useState([]);
-  const [loading,setLoading]=useState(true);
-
+  const [metas,setMetas]=useState(Array(12).fill(''));
+  const [metasSalvas,setMetasSalvas]=useState(Array(12).fill(''));
+  const [loading,setLoading]=useState(true);const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState(null);
   useEffect(()=>{
     (async()=>{
-      setLoading(true);
+      setLoading(true);setMsg(null);
       try{
-        const [lanc,metas,peds]=await Promise.all([
-          db.get('lancamentos',`data=gte.${ano}-01-01&data=lte.${ano}-12-31&order=data.asc`),
+        const [lanc,mts,peds,vendas]=await Promise.all([
+          db.get('lancamentos',`data=gte.${ano}-01-01&data=lte.${ano}-12-31`),
           db.get('metas',`ano=eq.${ano}`),
-          db.get('pedidos',`created_at=gte.${ano}-01-01T00:00:00&created_at=lte.${ano}-12-31T23:59:59`)
+          db.get('pedidos',`created_at=gte.${ano}-01-01T00:00:00&created_at=lte.${ano}-12-31T23:59:59`),
+          db.get('vendas',`data=gte.${ano}-01-01&data=lte.${ano}-12-31`)
         ]);
-        const pm={};
-        for(let m=1;m<=12;m++) pm[m]={mes:m,receita:0,despesa:0,meta:0,pedidos:0};
-        lanc.forEach(l=>{const m=parseInt(l.data?.slice(5,7));if(pm[m]) pm[m][l.tipo]+= +l.valor;});
-        metas.forEach(r=>{if(pm[r.mes]) pm[r.mes].meta= +r.valor;});
-        peds.forEach(p=>{const m=parseInt(p.created_at?.slice(5,7));if(pm[m]) pm[m].pedidos++;});
-        setDados(Object.values(pm));
+        const pm=MESES.map((n,i)=>({mes:i+1,nome:n,receita:0,despesa:0,vendido:0,pedidos:0}));
+        lanc.forEach(l=>{const m=pm[+l.data.slice(5,7)-1];if(m) m[l.tipo]+= +l.valor;});
+        registrosVenda(peds,vendas).forEach(r=>{const m=pm[+r.data.slice(5,7)-1];if(m&&r.data.startsWith(String(ano))){m.vendido+=r.valor;m.pedidos++;}});
+        const v=Array(12).fill('');
+        mts.forEach(r=>{v[r.mes-1]=+r.valor>0?String(+r.valor):'';});
+        setDados(pm);setMetas(v);setMetasSalvas(v);
       }catch{}finally{setLoading(false);}
     })();
   },[ano]);
-
+  const alterado=metas.some((v,i)=>v!==metasSalvas[i]);
+  const save=async()=>{
+    setSaving(true);setMsg(null);
+    try{
+      await Promise.all(metas.map((v,i)=>v!==metasSalvas[i]&&+v>0?db.upsert('metas',{ano,mes:i+1,valor:+v},'ano,mes'):null));
+      setMetasSalvas(metas);setMsg({ok:true,t:'Metas salvas com sucesso!'});
+    }catch(e){setMsg({ok:false,t:'Erro: '+e.message});}
+    finally{setSaving(false);}
+  };
+  const metaN=i=>+metas[i]||0;
   const totalRec=dados.reduce((s,d)=>s+d.receita,0);
   const totalDesp=dados.reduce((s,d)=>s+d.despesa,0);
-  const totalMeta=dados.reduce((s,d)=>s+d.meta,0);
+  const totalVend=dados.reduce((s,d)=>s+d.vendido,0);
+  const totalMeta=metas.reduce((s,v)=>s+(+v||0),0);
   const resultado=totalRec-totalDesp;
-  const mesesComDados=dados.filter(d=>d.receita>0||d.despesa>0).length;
-  const maxVal=Math.max(...dados.flatMap(d=>[d.receita,d.despesa,d.meta]),1);
-
-  // Gráfico de barras anual — chamado como função, não como componente
-  const renderGrafico=()=>{
-    const h=isMobile?140:180; const aH=h-24; const gw=100/12; const bw=gw*0.28;
-    return html`<div>
-      <div style=${{display:'flex',gap:12,marginBottom:8,flexWrap:'wrap'}}>
-        <span style=${{fontSize:10,color:C.green,display:'flex',alignItems:'center',gap:4}}><span style=${{width:10,height:10,background:C.green,borderRadius:2,display:'inline-block'}}/> Receita</span>
-        <span style=${{fontSize:10,color:C.red,display:'flex',alignItems:'center',gap:4}}><span style=${{width:10,height:10,background:C.red,borderRadius:2,display:'inline-block'}}/> Despesa</span>
-        <span style=${{fontSize:10,color:C.gold,display:'flex',alignItems:'center',gap:4}}><span style=${{width:10,height:10,background:C.gold,borderRadius:2,display:'inline-block'}}/> Meta</span>
-      </div>
-      <svg viewBox="0 0 100 ${h}" preserveAspectRatio="none" style=${{width:'100%',height:h+'px',display:'block'}}>
-        ${dados.map((d,i)=>{
-          const recH=(d.receita/maxVal)*aH;
-          const despH=(d.despesa/maxVal)*aH;
-          const metaH=(d.meta/maxVal)*aH;
-          const gx=i*gw;
-          const ativo=d.mes===MES_ATUAL&&ano===ANO_ATUAL;
-          return html`<g key=${i}>
-            ${ativo&&html`<rect x=${gx} y="0" width=${gw} height=${aH} fill="#3ECBA011" rx="1"/>`}
-            <rect x=${gx+gw*0.04} y=${aH-recH} width=${bw} height=${recH} fill=${C.green} rx="1"/>
-            <rect x=${gx+gw*0.04+bw+gw*0.02} y=${aH-despH} width=${bw} height=${despH} fill=${C.red} rx="1"/>
-            ${d.meta>0&&html`<line x1=${gx+gw*0.04} y1=${aH-metaH} x2=${gx+gw*0.96} y2=${aH-metaH} stroke=${C.gold} stroke-width="0.8" stroke-dasharray="1.5,1"/>`}
-            <text x=${gx+gw/2} y=${h-6} text-anchor="middle" fill=${ativo?C.gold:C.muted} font-size="4.5" font-weight=${ativo?'bold':'normal'}>${MESES[i].slice(0,3)}</text>
-          </g>`;
-        })}
-      </svg>
-    </div>`;
-  };
-
-  // Status da meta por mês
-  const metaStatus=d=>{
-    if(!d.meta) return {cor:C.muted,label:'—'};
-    const pct=Math.round((d.receita/d.meta)*100);
-    if(pct>=100) return {cor:C.green,label:`${pct}%`};
-    if(pct>=70)  return {cor:C.gold, label:`${pct}%`};
-    if(pct>=1)   return {cor:C.red,  label:`${pct}%`};
-    return {cor:C.muted,label:'0%'};
-  };
-
+  const pctMeta=i=>metaN(i)>0?Math.round((dados[i].receita/metaN(i))*100):null;
+  const corPct=p=>p===null?C.muted:p>=100?C.green:p>=70?C.gold:p>0?C.red:C.muted;
+  const ehAtual=i=>ano===ANO_ATUAL&&i===MES_ATUAL-1;
+  const cols=isMobile?'1.3fr 1.6fr 1.4fr .9fr':'1.3fr 1.6fr 1.3fr 1.3fr 1.2fr 1.3fr .8fr';
+  const cab=isMobile?['Mês','Meta','Recebido','%']:['Mês','Meta','Vendido','Recebido','Despesa','Resultado','% Meta'];
+  const navBtn=(txt,fn)=>html`<button onClick=${fn} style=${{background:C.surface,border:`1px solid ${C.border}`,color:C.muted,borderRadius:8,padding:'5px 12px',cursor:'pointer',fontSize:13}}>${txt}</button>`;
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
-    <!-- KPIs anuais -->
     <${KpiGrid} isMobile=${isMobile}>
-      <${KpiCard} title="Receita Anual" value=${fmt(totalRec)} sub=${String(ano)} icon="💰" color=${C.green}/>
-      <${KpiCard} title="Despesas Anuais" value=${fmt(totalDesp)} sub=${String(ano)} icon="📤" color=${C.red}/>
-      <${KpiCard} title="Resultado Anual" value=${fmt(resultado)} sub="receita − despesa" icon="📊" color=${resultado>=0?C.green:C.red}/>
-      <${KpiCard} title="Meta Anual" value=${totalMeta>0?fmt(totalMeta):'Não definida'} sub=${totalMeta>0?`${Math.round((totalRec/totalMeta)*100)}% atingido`:'Cadastre em Metas'} icon="🎯" color=${C.gold}/>
+      <${KpiCard} title="Recebido no Ano" value=${fmt(totalRec)} sub=${`vendido: ${fmt(totalVend)}`} icon="💰" color=${C.green}/>
+      <${KpiCard} title="Despesas no Ano" value=${fmt(totalDesp)} sub=${String(ano)} icon="📤" color=${C.red}/>
+      <${KpiCard} title="Resultado no Ano" value=${fmt(resultado)} sub="recebido − despesas" icon="📊" color=${resultado>=0?C.green:C.red}/>
+      <${KpiCard} title="Meta Anual" value=${totalMeta>0?fmt(totalMeta):'Não definida'} sub=${totalMeta>0?`${Math.round((totalRec/totalMeta)*100)}% atingido`:'preencha na tabela abaixo'} icon="🎯" color=${C.gold}/>
     </${KpiGrid}>
-
-    <!-- Seletor de ano + gráfico -->
     <${Card}>
       <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
         <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1}}>📅 Visão Anual — ${ano}</div>
         <div style=${{display:'flex',gap:8,alignItems:'center'}}>
-          <button onClick=${()=>setAno(a=>a-1)} style=${{background:C.surface,border:`1px solid ${C.border}`,color:C.muted,borderRadius:8,padding:'5px 12px',cursor:'pointer',fontSize:13}}>‹</button>
+          ${navBtn('‹',()=>setAno(a=>a-1))}
           <span style=${{color:C.text,fontWeight:700,fontSize:14,minWidth:40,textAlign:'center'}}>${ano}</span>
-          <button onClick=${()=>setAno(a=>a+1)} style=${{background:C.surface,border:`1px solid ${C.border}`,color:C.muted,borderRadius:8,padding:'5px 12px',cursor:'pointer',fontSize:13}}>›</button>
+          ${navBtn('›',()=>setAno(a=>a+1))}
         </div>
       </div>
-      ${loading?html`<${Spin}/>`:(renderGrafico())}
+      ${loading?html`<${Spin}/>`:html`<${GraficoBarras} height=${isMobile?140:180} destaque=${ano===ANO_ATUAL?MES_ATUAL-1:null}
+        dados=${dados.map((d,i)=>({mes:d.nome.slice(0,3),receita:d.receita,despesa:d.despesa,meta:metaN(i)}))}/>`}
     </${Card}>
-
-    <!-- Tabela mês a mês -->
     <${Card}>
-      <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:12}}>Detalhamento Mês a Mês</div>
+      <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Mês a mês — metas e realizado</div>
+      <div style=${{fontSize:11,color:C.muted,marginBottom:12}}>Digite a meta direto na tabela e toque em <strong style=${{color:C.gold}}>Salvar metas</strong>. O % compara a meta com o valor <strong>recebido</strong>.</div>
       ${loading?html`<${Spin}/>`:html`<div>
-        <!-- Cabeçalho -->
-        <div style=${{display:'grid',gridTemplateColumns:isMobile?'3fr 2fr 2fr 2fr':'3fr 2fr 2fr 2fr 2fr 2fr',gap:4,padding:'6px 8px',background:C.surface,borderRadius:8,marginBottom:6}}>
-          ${['Mês','Receita','Despesa','Resultado', ...(isMobile?[]:['Meta','% Meta'])].map(h=>html`
-            <div key=${h} style=${{fontSize:9,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:.5}}>${h}</div>`)}
+        <div style=${{display:'grid',gridTemplateColumns:cols,gap:6,padding:'6px 8px',background:C.surface,borderRadius:8,marginBottom:6}}>
+          ${cab.map(h=>html`<div key=${h} style=${{fontSize:9,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:.5}}>${h}</div>`)}
         </div>
-        <!-- Linhas -->
-        ${dados.map(d=>{
-          const res=d.receita-d.despesa;
-          const ms=metaStatus(d);
-          const ativo=d.mes===MES_ATUAL&&ano===ANO_ATUAL;
-          const temDados=d.receita>0||d.despesa>0;
-          return html`<div key=${d.mes} style=${{display:'grid',gridTemplateColumns:isMobile?'3fr 2fr 2fr 2fr':'3fr 2fr 2fr 2fr 2fr 2fr',gap:4,padding:'8px 8px',borderRadius:8,marginBottom:3,
-            background:ativo?C.gold+'18':temDados?C.card:C.surface,
-            border:ativo?`1px solid ${C.gold}44`:`1px solid transparent`,
-            opacity:temDados||ativo?1:0.45}}>
-            <div style=${{display:'flex',alignItems:'center',gap:6}}>
-              ${ativo&&html`<span style=${{width:6,height:6,borderRadius:'50%',background:C.gold,display:'inline-block',flexShrink:0}}/>`}
-              <span style=${{fontSize:12,color:ativo?C.gold:C.text,fontWeight:ativo?700:400}}>${MESES[d.mes-1]}</span>
-            </div>
-            <div style=${{fontSize:12,color:C.green,fontWeight:600}}>${d.receita>0?fmt(d.receita):'—'}</div>
-            <div style=${{fontSize:12,color:C.red,fontWeight:600}}>${d.despesa>0?fmt(d.despesa):'—'}</div>
-            <div style=${{fontSize:12,color:res>0?C.green:res<0?C.red:C.muted,fontWeight:600}}>${temDados?fmt(res):'—'}</div>
-            ${!isMobile&&html`<div style=${{fontSize:12,color:C.muted}}>${d.meta>0?fmt(d.meta):'—'}</div>`}
-            ${!isMobile&&html`<div style=${{fontSize:12,color:ms.cor,fontWeight:700}}>${ms.label}</div>`}
+        ${dados.map((d,i)=>{
+          const res=d.receita-d.despesa; const p=pctMeta(i); const atual=ehAtual(i);
+          const temDados=d.receita>0||d.despesa>0||d.vendido>0||metaN(i)>0;
+          const cel=(v,cor)=>html`<div style=${{fontSize:12,color:cor,fontWeight:600,alignSelf:'center'}}>${v}</div>`;
+          return html`<div key=${d.mes} style=${{display:'grid',gridTemplateColumns:cols,gap:6,padding:'6px 8px',borderRadius:8,marginBottom:3,
+            background:atual?C.gold+'18':C.card,border:atual?`1px solid ${C.gold}44`:'1px solid transparent',opacity:temDados||atual?1:.55}}>
+            <div style=${{fontSize:12,color:atual?C.gold:C.text,fontWeight:atual?800:500,alignSelf:'center'}}>${isMobile?d.nome.slice(0,3):d.nome}</div>
+            <input type="number" step="0.01" min="0" value=${metas[i]} placeholder="—"
+              onInput=${e=>{const v=[...metas];v[i]=e.target.value;setMetas(v);}}
+              style=${{...inputSt,padding:'6px 8px',fontSize:12,borderColor:metas[i]!==metasSalvas[i]?C.gold:C.border}}/>
+            ${!isMobile&&cel(d.vendido>0?fmt(d.vendido):'—',C.blue)}
+            ${cel(d.receita>0?fmt(d.receita):'—',C.green)}
+            ${!isMobile&&cel(d.despesa>0?fmt(d.despesa):'—',C.red)}
+            ${!isMobile&&cel(d.receita>0||d.despesa>0?fmt(res):'—',res>0?C.green:res<0?C.red:C.muted)}
+            <div style=${{fontSize:12,color:corPct(p),fontWeight:800,alignSelf:'center'}}>${p===null?'—':p+'%'}</div>
           </div>`;
         })}
-        <!-- Totais -->
-        <div style=${{display:'grid',gridTemplateColumns:isMobile?'3fr 2fr 2fr 2fr':'3fr 2fr 2fr 2fr 2fr 2fr',gap:4,padding:'10px 8px',borderRadius:8,marginTop:6,background:C.surface,borderTop:`2px solid ${C.border}`}}>
+        <div style=${{display:'grid',gridTemplateColumns:cols,gap:6,padding:'10px 8px',borderRadius:8,marginTop:6,background:C.surface,borderTop:`2px solid ${C.border}`}}>
           <div style=${{fontSize:11,color:C.text,fontWeight:800}}>TOTAL</div>
+          <div style=${{fontSize:11,color:C.meta,fontWeight:800}}>${totalMeta>0?fmt(totalMeta):'—'}</div>
+          ${!isMobile&&html`<div style=${{fontSize:11,color:C.blue,fontWeight:800}}>${fmt(totalVend)}</div>`}
           <div style=${{fontSize:11,color:C.green,fontWeight:800}}>${fmt(totalRec)}</div>
-          <div style=${{fontSize:11,color:C.red,fontWeight:800}}>${fmt(totalDesp)}</div>
-          <div style=${{fontSize:11,color:resultado>=0?C.green:C.red,fontWeight:800}}>${fmt(resultado)}</div>
-          ${!isMobile&&html`<div style=${{fontSize:11,color:C.gold,fontWeight:800}}>${totalMeta>0?fmt(totalMeta):'—'}</div>`}
-          ${!isMobile&&html`<div style=${{fontSize:11,color:totalMeta>0?(totalRec/totalMeta>=1?C.green:C.red):C.muted,fontWeight:800}}>${totalMeta>0?Math.round((totalRec/totalMeta)*100)+'%':'—'}</div>`}
+          ${!isMobile&&html`<div style=${{fontSize:11,color:C.red,fontWeight:800}}>${fmt(totalDesp)}</div>`}
+          ${!isMobile&&html`<div style=${{fontSize:11,color:resultado>=0?C.green:C.red,fontWeight:800}}>${fmt(resultado)}</div>`}
+          <div style=${{fontSize:11,color:totalMeta>0?(totalRec>=totalMeta?C.green:C.red):C.muted,fontWeight:800}}>${totalMeta>0?Math.round((totalRec/totalMeta)*100)+'%':'—'}</div>
+        </div>
+        <div style=${{marginTop:12}}>
+          ${msg&&(msg.ok?html`<${OkBox} msg=${msg.t}/>`:html`<${ErrBox} msg=${msg.t}/>`)}
+          <${Btn} full onClick=${save} disabled=${saving||!alterado}>${saving?'Salvando metas...':alterado?'💾 Salvar metas':'Metas salvas'}</${Btn}>
         </div>
       </div>`}
     </${Card}>
-
-    <!-- Cards por mês (mobile: resumo compacto) -->
-    ${isMobile&&html`<div>
-      <div style=${{fontSize:10,color:C.muted,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:10}}>Resumo por Mês</div>
-      ${dados.filter(d=>d.receita>0||d.despesa>0||d.meta>0).map(d=>{
-        const res=d.receita-d.despesa;
-        const ms=metaStatus(d);
-        const ativo=d.mes===MES_ATUAL&&ano===ANO_ATUAL;
-        return html`<div key=${d.mes} style=${{background:ativo?C.gold+'18':C.card,borderRadius:12,padding:12,marginBottom:8,border:`1px solid ${ativo?C.gold+'44':C.border}`,borderLeft:`3px solid ${ms.cor}`}}>
-          <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-            <span style=${{fontSize:13,color:ativo?C.gold:C.text,fontWeight:700}}>${MESES[d.mes-1]} ${ano}</span>
-            <span style=${{fontSize:13,color:ms.cor,fontWeight:800}}>${ms.label}</span>
-          </div>
-          <div style=${{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
-            <div style=${{background:C.surface,borderRadius:8,padding:'6px 8px'}}>
-              <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Receita</div>
-              <div style=${{fontSize:13,color:C.green,fontWeight:700}}>${d.receita>0?fmt(d.receita):'—'}</div>
-            </div>
-            <div style=${{background:C.surface,borderRadius:8,padding:'6px 8px'}}>
-              <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Despesa</div>
-              <div style=${{fontSize:13,color:C.red,fontWeight:700}}>${d.despesa>0?fmt(d.despesa):'—'}</div>
-            </div>
-            <div style=${{background:C.surface,borderRadius:8,padding:'6px 8px'}}>
-              <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Resultado</div>
-              <div style=${{fontSize:13,color:res>=0?C.green:C.red,fontWeight:700}}>${d.receita>0||d.despesa>0?fmt(res):'—'}</div>
-            </div>
-            <div style=${{background:C.surface,borderRadius:8,padding:'6px 8px'}}>
-              <div style=${{fontSize:9,color:C.muted,textTransform:'uppercase'}}>Meta</div>
-              <div style=${{fontSize:13,color:C.gold,fontWeight:700}}>${d.meta>0?fmt(d.meta):'—'}</div>
-            </div>
-          </div>
-          ${d.meta>0&&html`<div style=${{marginTop:8}}>
-            <${PBar} value=${Math.min(100,Math.round((d.receita/d.meta)*100))} color=${ms.cor}/>
-          </div>`}
-        </div>`;
-      })}
-      ${dados.filter(d=>d.receita>0||d.despesa>0||d.meta>0).length===0&&html`<${Empty} msg="Nenhum dado encontrado para ${ano}"/>`}
-    </div>`}
   </div>`;
 }
 
@@ -1232,7 +1154,7 @@ function FormVenda({db,session,onDone}){
     if(+f.valor_total<=0) return setErr('O valor total deve ser maior que zero.');
     setLoading(true);setErr('');
     try{
-      const hoje=new Date().toISOString().slice(0,10);
+      const hoje=hojeISO();
       // 1. Cria o lançamento de receita
       const lanc=await db.post('lancamentos',{
         tipo:'receita',
@@ -1273,7 +1195,7 @@ function FormVenda({db,session,onDone}){
 
 // ── SEÇÃO: VENDAS DO DIA ──────────────────────────────────────────────────────
 function VendasDia({db,session,isMobile}){
-  const hoje=new Date().toISOString().slice(0,10);
+  const hoje=hojeISO();
   const [dataSel,setDataSel]=useState(hoje);
   const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);const [modal,setModal]=useState(false);
   const isHoje=dataSel===hoje;
@@ -1287,7 +1209,7 @@ function VendasDia({db,session,isMobile}){
   const navDia=delta=>{
     const d=new Date(dataSel+'T12:00:00');
     d.setDate(d.getDate()+delta);
-    const nova=d.toISOString().slice(0,10);
+    const nova=isoLocal(d);
     if(nova<=hoje) setDataSel(nova);
   };
 
@@ -1433,25 +1355,22 @@ function Configuracao({db,url,sbKey,session,isMobile}){
   </div>`;
 }
 
+// Catálogo (estoque) está oculto do menu; para reativar, volte a incluir {id:'estoque',label:'Catálogo',icon:'🏷️'}
 const MENU_G=[
   {id:'dashboard', label:'Dashboard', icon:'📊'},
   {id:'vendas',    label:'Vendas do Dia',icon:'💵'},
-  {id:'financeiro',label:'Financeiro',icon:'💰'},
   {id:'pedidos',   label:'Pedidos',   icon:'📋'},
+  {id:'financeiro',label:'Financeiro',icon:'💰'},
   {id:'clientes',  label:'Clientes',  icon:'🏢'},
-  {id:'estoque',   label:'Catálogo',  icon:'🏷️'},
-  {id:'metas',     label:'Metas',     icon:'🎯'},
-  {id:'historico', label:'Histórico', icon:'📅'},
+  {id:'metas',     label:'Metas & Histórico',curto:'Metas',icon:'🎯'},
   {id:'config',    label:'Configuração',icon:'⚙️'},
 ];
 const MENU_A=[
   {id:'vendas',    label:'Vendas do Dia',icon:'💵'},
   {id:'pedidos',   label:'Pedidos',   icon:'📋'},
   {id:'clientes',  label:'Clientes',  icon:'🏢'},
-  {id:'estoque',   label:'Catálogo',  icon:'🏷️'},
   {id:'financeiro',label:'Financeiro',icon:'💰'},
-  {id:'metas',     label:'Metas',     icon:'🎯'},
-  {id:'historico', label:'Histórico', icon:'📅'},
+  {id:'metas',     label:'Metas & Histórico',curto:'Metas',icon:'🎯'},
 ];
 
 // ── APP ───────────────────────────────────────────────────────────────────────
@@ -1505,18 +1424,17 @@ function App(){
       ${pag==='dashboard'  &&html`<${Dashboard}  ...${pr}/>`}
       ${pag==='vendas'     &&html`<${VendasDia}  ...${pr} session=${sess}/>`}
       ${pag==='financeiro' &&html`<${Financeiro} ...${pr} role=${sess.role}/>`}
-      ${pag==='pedidos'    &&html`<${Pedidos}    ...${pr}/>`}
+      ${pag==='pedidos'    &&html`<${Pedidos}    ...${pr} session=${sess}/>`}
       ${pag==='clientes'   &&html`<${Clientes}   ...${pr}/>`}
       ${pag==='estoque'    &&html`<${Estoque}     ...${pr}/>`}
-      ${pag==='metas'      &&html`<${Metas}       ...${pr}/>`}
-      ${pag==='historico'  &&html`<${Historico}   ...${pr}/>`}
+      ${pag==='metas'      &&html`<${MetasHistorico} ...${pr}/>`}
       ${pag==='config'     &&html`<${Configuracao} ...${pr} url=${cfg.url} sbKey=${cfg.key} session=${sess}/>`}
     </div>
 
     ${isMobile&&html`<nav style=${{position:'fixed',bottom:0,left:0,right:0,background:C.surface,borderTop:`1px solid ${C.border}`,display:'flex',zIndex:100,boxShadow:'0 -4px 20px #00000050'}}>
       ${MENU_MOB.map(m=>html`<button key=${m.id} onClick=${()=>setPag(m.id)} style=${{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'10px 2px 8px',background:'none',border:'none',cursor:'pointer',borderTop:pag===m.id?`2px solid ${C.gold}`:'2px solid transparent'}}>
         <span style=${{fontSize:19,lineHeight:1}}>${m.icon}</span>
-        <span style=${{fontSize:9,fontWeight:700,marginTop:3,color:pag===m.id?C.gold:C.muted,textTransform:'uppercase'}}>${m.label.length>7?m.label.slice(0,6)+'.':m.label}</span>
+        <span style=${{fontSize:9,fontWeight:700,marginTop:3,color:pag===m.id?C.gold:C.muted,textTransform:'uppercase'}}>${m.curto||(m.label.length>7?m.label.slice(0,6)+'.':m.label)}</span>
       </button>`)}
       ${precisaMais&&html`<button onClick=${()=>setMaisAberto(true)} style=${{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'10px 2px 8px',background:'none',border:'none',cursor:'pointer',borderTop:MENU_EXTRA.some(m=>m.id===pag)?`2px solid ${C.gold}`:'2px solid transparent'}}>
         <span style=${{fontSize:19,lineHeight:1}}>⋯</span>
