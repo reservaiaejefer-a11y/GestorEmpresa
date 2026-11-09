@@ -1194,17 +1194,27 @@ function FormVenda({db,session,onDone}){
 }
 
 // ── SEÇÃO: VENDAS DO DIA ──────────────────────────────────────────────────────
+// Painel do dia: pedidos criados na data + vendas avulsas (botão "Venda avulsa")
 function VendasDia({db,session,isMobile}){
   const hoje=hojeISO();
   const [dataSel,setDataSel]=useState(hoje);
-  const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);const [modal,setModal]=useState(false);
+  const [peds,setPeds]=useState([]);const [avulsas,setAvulsas]=useState([]);
+  const [loading,setLoading]=useState(true);const [modal,setModal]=useState(false);
+  const [filtroVend,setFiltroVend]=useState(null);
   const isHoje=dataSel===hoje;
 
   const load=useCallback(async()=>{
     setLoading(true);
-    try{setRows(await db.get('vendas',`data=eq.${dataSel}`));}catch{}finally{setLoading(false);}
+    try{
+      const ini=new Date(dataSel+'T00:00:00'); const fim=new Date(ini); fim.setDate(fim.getDate()+1);
+      const [p,v]=await Promise.all([
+        db.get('pedidos',`created_at=gte.${ini.toISOString()}&created_at=lt.${fim.toISOString()}`),
+        db.get('vendas',`data=eq.${dataSel}`)
+      ]);
+      setPeds(p);setAvulsas(v);
+    }catch{}finally{setLoading(false);}
   },[dataSel]);
-  useEffect(()=>{load();},[dataSel]);
+  useEffect(()=>{load();setFiltroVend(null);},[dataSel]);
 
   const navDia=delta=>{
     const d=new Date(dataSel+'T12:00:00');
@@ -1212,26 +1222,36 @@ function VendasDia({db,session,isMobile}){
     const nova=isoLocal(d);
     if(nova<=hoje) setDataSel(nova);
   };
-
   const dataFmt=new Date(dataSel+'T12:00:00').toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long'});
 
   const del=async(v)=>{
-    if(!confirm('Excluir esta venda? A receita correspondente também será removida.'))return;
+    if(!confirm('Excluir esta venda avulsa? A receita correspondente também será removida.'))return;
     try{
       if(v.lancamento_id) await db.del('lancamentos',v.lancamento_id);
       await db.del('vendas',v.id);
     }catch{}
     load();
   };
-  const totalDia=rows.reduce((s,v)=>s+ +v.valor_total,0);
-  const itensVendidos=rows.reduce((s,v)=>s+ +v.quantidade,0);
+
+  const itens=[
+    ...peds.map(p=>({chave:'p'+p.id,titulo:p.cliente_nome,codigo:p.codigo,status:p.status,valor:+p.valor_total||0,vendedor:p.vendedor_nome||'Sem vendedor',quando:p.created_at})),
+    ...avulsas.map(v=>({chave:'v'+v.id,titulo:v.item,detalhe:`${fmtN(v.quantidade)} × ${fmt(v.valor_unitario)}`,valor:+v.valor_total||0,vendedor:v.vendedor_nome||'Sem vendedor',quando:v.created_at,avulsa:v}))
+  ].sort((a,b)=>(b.quando||'').localeCompare(a.quando||''));
+  const porVend={};
+  itens.forEach(i=>{const m=porVend[i.vendedor]||(porVend[i.vendedor]={nome:i.vendedor,qtd:0,total:0});m.qtd++;m.total+=i.valor;});
+  const vendedores=Object.values(porVend).sort((a,b)=>(a.nome==='Sem vendedor')-(b.nome==='Sem vendedor')||a.nome.localeCompare(b.nome));
+  const visiveis=filtroVend?itens.filter(i=>i.vendedor===filtroVend):itens;
+  const totalDia=itens.reduce((s,i)=>s+i.valor,0);
+  const totalVisivel=visiveis.reduce((s,i)=>s+i.valor,0);
+  const hora=ts=>ts?new Date(ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
+
   return html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
     <div style=${{display:'flex',alignItems:'center',gap:10,background:C.card,borderRadius:12,padding:'12px 14px',border:`1px solid ${isHoje?C.gold+'44':C.border}`}}>
       <button onClick=${()=>navDia(-1)} style=${{background:C.surface,border:`1px solid ${C.border}`,color:C.muted,borderRadius:8,padding:'8px 16px',cursor:'pointer',fontSize:18,lineHeight:1,flexShrink:0}}>‹</button>
       <div style=${{flex:1,textAlign:'center'}}>
         ${isHoje
           ? html`<div style=${{fontSize:15,fontWeight:800,color:C.gold}}>Hoje</div>
-                 <div style=${{fontSize:11,color:C.muted,marginTop:2}}>${new Date(dataSel+'T12:00:00').toLocaleDateString('pt-BR')}</div>`
+                 <div style=${{fontSize:11,color:C.muted,marginTop:2}}>${fmtData(dataSel)}</div>`
           : html`<div style=${{fontSize:14,fontWeight:700,color:C.text,textTransform:'capitalize'}}>${dataFmt}</div>
                  <button onClick=${()=>setDataSel(hoje)} style=${{background:'none',border:'none',color:C.gold,fontSize:10,cursor:'pointer',marginTop:3,fontWeight:700}}>Ir para hoje →</button>`
         }
@@ -1239,32 +1259,60 @@ function VendasDia({db,session,isMobile}){
       <button onClick=${()=>navDia(1)} disabled=${isHoje} style=${{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:'8px 16px',fontSize:18,lineHeight:1,flexShrink:0,cursor:isHoje?'not-allowed':'pointer',color:isHoje?C.border:C.muted,opacity:isHoje?.35:1}}>›</button>
     </div>
     <${KpiGrid} isMobile=${isMobile}>
-      <${KpiCard} title=${isHoje?'Vendas de Hoje':'Total do Dia'} value=${fmt(totalDia)} sub=${new Date(dataSel+'T12:00:00').toLocaleDateString('pt-BR')} icon="💵" color=${C.green}/>
-      <${KpiCard} title="Nº de Vendas" value=${rows.length} sub=${isHoje?'registradas hoje':'neste dia'} icon="🧾" color=${C.blue}/>
-      <${KpiCard} title="Itens Vendidos" value=${fmtN(itensVendidos)} sub="unidades" icon="📦" color=${C.purple}/>
+      <${KpiCard} title=${isHoje?'Vendido Hoje':'Vendido no Dia'} value=${fmt(totalDia)} sub=${fmtData(dataSel)} icon="💵" color=${C.green}/>
+      <${KpiCard} title="Nº de Vendas" value=${itens.length} sub=${`${peds.length} ${peds.length===1?'pedido':'pedidos'} · ${avulsas.length} ${avulsas.length===1?'avulsa':'avulsas'}`} icon="🧾" color=${C.blue}/>
+      <${KpiCard} title="Ticket Médio" value=${fmt(itens.length?totalDia/itens.length:0)} sub="por venda" icon="📊" color=${C.gold}/>
+      <${KpiCard} title="Vendedores" value=${vendedores.filter(v=>v.nome!=='Sem vendedor').length} sub="com venda no dia" icon="👤" color=${C.purple}/>
     </${KpiGrid}>
-    ${isHoje&&html`<div style=${{display:'flex',justifyContent:'flex-end'}}><${Btn} onClick=${()=>setModal(true)}>+ Nova Venda</${Btn}></div>`}
-    ${loading?html`<${Spin}/>`:rows.length===0
-      ?html`<${Empty} msg=${isHoje?'Nenhuma venda registrada hoje':'Nenhuma venda registrada neste dia'}/>`
-      :rows.map(v=>html`
-      <div key=${v.id} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,borderLeft:`3px solid ${C.green}`,marginBottom:8}}>
-        <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-          <div style=${{flex:1,marginRight:8}}>
-            <div style=${{fontSize:13,color:C.text,fontWeight:700}}>${v.item}</div>
-            <div style=${{fontSize:10,color:C.muted,marginTop:2}}>${fmtN(v.quantidade)} × ${fmt(v.valor_unitario)}</div>
+    ${loading?html`<${Spin}/>`:html`<div style=${{display:'flex',flexDirection:'column',gap:14}}>
+      ${vendedores.length>0&&html`<${Card}>
+        <${SecTitle}>👤 Por vendedor</${SecTitle}>
+        <div style=${{fontSize:11,color:C.muted,margin:'-4px 0 10px'}}>Toque num vendedor para ver só as vendas dele.</div>
+        <div style=${{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(auto-fill,minmax(190px,1fr))',gap:8}}>
+          ${vendedores.map(v=>{
+            const sel=filtroVend===v.nome;
+            return html`<button key=${v.nome} onClick=${()=>setFiltroVend(sel?null:v.nome)} style=${{textAlign:'left',cursor:'pointer',background:sel?C.gold+'18':C.surface,border:`1px solid ${sel?C.gold:C.border}`,borderRadius:10,padding:'10px 12px'}}>
+              <div style=${{fontSize:12,color:sel?C.gold:C.text,fontWeight:800,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>${v.nome}</div>
+              <div style=${{fontSize:17,color:C.green,fontWeight:900,marginTop:4}}>${fmt(v.total)}</div>
+              <div style=${{fontSize:10,color:C.muted,marginTop:2}}>${v.qtd} ${v.qtd===1?'venda':'vendas'}</div>
+            </button>`;
+          })}
+        </div>
+      </${Card}>`}
+      <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+        <div style=${{fontSize:11,color:C.muted,flex:1,minWidth:180}}>
+          ${filtroVend?html`Mostrando vendas de <strong style=${{color:C.gold}}>${filtroVend}</strong> · <button onClick=${()=>setFiltroVend(null)} style=${{background:'none',border:'none',color:C.gold,cursor:'pointer',fontSize:11,fontWeight:700,padding:0}}>ver todos</button>`
+            :'Os pedidos criados no dia aparecem aqui automaticamente.'}
+        </div>
+        ${isHoje&&html`<${Btn} small onClick=${()=>setModal(true)}>+ Venda avulsa</${Btn}>`}
+      </div>
+      ${visiveis.length===0?html`<${Empty} msg=${isHoje?'Nenhuma venda registrada hoje':'Nenhuma venda registrada neste dia'}/>`
+      :visiveis.map(i=>{
+        const cor=i.avulsa?C.green:(COR_ST[i.status]||C.muted);
+        return html`<div key=${i.chave} style=${{background:C.card,borderRadius:12,padding:13,border:`1px solid ${C.border}`,borderLeft:`3px solid ${cor}`}}>
+          <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+            <div style=${{flex:1,minWidth:0}}>
+              <div style=${{fontSize:13,color:C.text,fontWeight:700}}>${i.titulo}</div>
+              <div style=${{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:4}}>
+                ${i.avulsa?html`<${Badge} label="Venda avulsa" color=${C.green}/><span style=${{fontSize:10,color:C.muted}}>${i.detalhe}</span>`
+                  :html`<span style=${{fontSize:10,color:C.gold,fontWeight:700,fontFamily:'monospace'}}>${i.codigo}</span><${Badge} label=${i.status} color=${cor}/>`}
+              </div>
+            </div>
+            <div style=${{fontSize:15,color:C.green,fontWeight:800,flexShrink:0}}>${fmt(i.valor)}</div>
           </div>
-          <div style=${{fontSize:15,color:C.green,fontWeight:800}}>${fmt(v.valor_total)}</div>
-        </div>
-        <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:8}}>
-          <span style=${{fontSize:10,color:C.muted}}>👤 ${v.vendedor_nome||'—'}</span>
-          <${Btn} small color=${C.red} onClick=${()=>del(v)}>🗑 Excluir</${Btn}>
-        </div>
-      </div>`)}
-    ${rows.length>0&&html`<div style=${{background:C.surface,borderRadius:10,padding:'12px 14px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-      <span style=${{fontSize:13,color:C.muted,fontWeight:600}}>Total do Dia</span>
-      <span style=${{fontSize:18,color:C.green,fontWeight:800}}>${fmt(totalDia)}</span>
+          <div style=${{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:8,gap:8}}>
+            <span style=${{fontSize:10,color:C.muted}}>👤 ${i.vendedor}${i.quando?` · 🕒 ${hora(i.quando)}`:''}</span>
+            ${i.avulsa&&html`<${Btn} small color=${C.red} onClick=${()=>del(i.avulsa)}>🗑 Excluir</${Btn}>`}
+          </div>
+        </div>`;
+      })}
+      ${visiveis.length>0&&html`<div style=${{background:C.surface,borderRadius:10,padding:'12px 14px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <span style=${{fontSize:13,color:C.muted,fontWeight:600}}>${filtroVend?`Total de ${filtroVend}`:'Total do Dia'}</span>
+        <span style=${{fontSize:18,color:C.green,fontWeight:800}}>${fmt(filtroVend?totalVisivel:totalDia)}</span>
+      </div>`}
     </div>`}
-    ${modal&&html`<${Modal} title="Nova Venda" onClose=${()=>setModal(false)}>
+    ${modal&&html`<${Modal} title="Venda avulsa" onClose=${()=>setModal(false)}>
+      <div style=${{fontSize:11,color:C.muted,marginBottom:12,lineHeight:1.6}}>Use para vendas pagas na hora, sem pedido. Vendas com pedido são registradas na aba <strong style=${{color:C.gold}}>Pedidos</strong> e aparecem aqui sozinhas.</div>
       <${FormVenda} db=${db} session=${session} onDone=${ok=>{setModal(false);if(ok)load();}}/>
     </${Modal}>`}
   </div>`;

@@ -1,5 +1,5 @@
--- Execute no SQL Editor do Supabase ANTES de subir o novo index.html
--- Dashboard > SQL Editor > New Query > cole tudo > Run
+-- JÁ APLICADO no Supabase em 04/11/2026 (migração pedidos_vendedor_e_status_anterior).
+-- Fica aqui como registro e para recriar o banco.
 
 -- Vendedor responsável por cada pedido (alimenta o quadro de vendedores do Dashboard)
 ALTER TABLE public.pedidos ADD COLUMN IF NOT EXISTS vendedor_nome TEXT;
